@@ -271,6 +271,31 @@ class StorageService {
     return { valid: ct === declaredMime && cl === declaredSize, contentType: ct, contentLength: cl };
   }
 
+  async validateUploadedObject(key, declaredMime, declaredSize) {
+    if (process.env.NODE_ENV === 'test') {
+      const entry = this._inMemoryStore.get(key);
+      if (!entry) { const err = new Error('Uploaded object not found'); err.code = 'UPLOAD_NOT_FOUND'; throw err; }
+      const valid = entry.mimeType === declaredMime && entry.body.length === declaredSize;
+      return { valid, contentType: entry.mimeType, contentLength: entry.body.length };
+    }
+    const { HeadObjectCommand } = require('@aws-sdk/client-s3');
+    const cmd = new HeadObjectCommand({ Bucket: this.bucket, Key: key });
+    const res = await s3Client.send(cmd);
+    const ct = res.ContentType || '';
+    const cl = res.ContentLength || 0;
+    if (cl > this.maxFileSize) { const err = new Error(`Uploaded file size ${cl} exceeds maximum`); err.code = 'FILE_TOO_LARGE'; throw err; }
+    if (declaredMime === 'application/pdf' && cl > 0) {
+      try {
+        const { GetObjectCommand } = require('@aws-sdk/client-s3');
+        const gCmd = new GetObjectCommand({ Bucket: this.bucket, Key: key, Range: 'bytes=0-4' });
+        const gRes = await s3Client.send(gCmd);
+        const chunks = []; for await (const c of gRes.Body) { chunks.push(c); }
+        if (Buffer.concat(chunks).toString('utf8') !== '%PDF-') { const err = new Error('Invalid PDF header'); err.code = 'INVALID_PDF_HEADER'; throw err; }
+      } catch (e) { if (e.code === 'INVALID_PDF_HEADER') throw e; }
+    }
+    return { valid: ct === declaredMime && cl === declaredSize, contentType: ct, contentLength: cl };
+  }
+
   generateKey({ tenantId, invoiceId, fileName }) {
     const safeName = this._sanitizeFilename(fileName);
     return this._generateKey(tenantId, invoiceId, safeName);
@@ -527,4 +552,5 @@ module.exports.hasCredentialsConfigured = hasCredentialsConfigured;
 module.exports.SAFE_ERROR_NAMES = SAFE_ERROR_NAMES;
 module.exports.PROBE_TIMEOUT_MS = PROBE_TIMEOUT_MS;
 module.exports.logger = logger;
+
 
