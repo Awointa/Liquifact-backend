@@ -91,7 +91,7 @@ avoid IEEE 754 drift in UI rendering.
 | Stellar network | [`src/config/stellar.js`](../src/config/stellar.js), [`src/config/index.js`](../src/config/index.js) | `getStellarConfig`, Zod `validate()` |
 | Soroban wrapper | [`src/services/soroban.js`](../src/services/soroban.js) | `callSorobanContract` (retries) |
 | Read + legal hold | [`src/services/escrowRead.js`](../src/services/escrowRead.js) | `readEscrowState`, `fetchLegalHold` |
-| Batch read | [`src/services/escrowBatchRead.js`](../src/services/escrowBatchRead.js) | Uses `readEscrowState` with concurrency limits |
+| Batch read | [`src/services/escrowBatchRead.js`](../src/services/escrowBatchRead.js) | Uses `readEscrowState` with concurrency limits and per-invoice transient error retry |
 | Funding stub | [`src/services/escrowSubmit.js`](../src/services/escrowSubmit.js) | `submitEscrowFunding`, `FUND_OPERATION = 'fund_escrow'` |
 | Simulation | [`src/services/sorobanSim.js`](../src/services/sorobanSim.js) | `simulateOrThrowSync` (when signed XDR present) |
 | Indexer job | [`src/jobs/escrowIndexer.js`](../src/jobs/escrowIndexer.js) | `createEscrowIndexer`, `runEscrowIndexerCycle`, `persistEscrowEvent` |
