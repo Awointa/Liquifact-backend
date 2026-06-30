@@ -1,4 +1,4 @@
-/**
+﻿/**
  * S3-compatible storage service for invoice file uploads and presigned URLs.
  * Handles MIME validation, size enforcement, tenant scoping, and path traversal prevention.
  *
@@ -28,7 +28,7 @@ const PROBE_TIMEOUT_MS = 5000;
  * leaking credentials or endpoint details. Anything outside this allowlist is
  * collapsed into the generic `unknown` code by {@link sanitizeStorageError}.
  *
- * Names actionable for a `HeadBucket` call only — names like `NoSuchKey` are
+ * Names actionable for a `HeadBucket` call only â€” names like `NoSuchKey` are
  * omitted because they cannot originate from a bucket-level probe.
  *
  * @type {ReadonlySet<string>}
@@ -246,6 +246,31 @@ class StorageService {
     return await db('invoice_files').where({ tenant_id: tenantId, invoice_id: invoiceId }).first();
   }
 
+  async validateUploadedObject(key, declaredMime, declaredSize) {
+    if (process.env.NODE_ENV === 'test') {
+      const entry = this._inMemoryStore.get(key);
+      if (!entry) { const err = new Error('Uploaded object not found'); err.code = 'UPLOAD_NOT_FOUND'; throw err; }
+      const valid = entry.mimeType === declaredMime && entry.body.length === declaredSize;
+      return { valid, contentType: entry.mimeType, contentLength: entry.body.length };
+    }
+    const { HeadObjectCommand } = require('@aws-sdk/client-s3');
+    const cmd = new HeadObjectCommand({ Bucket: this.bucket, Key: key });
+    const res = await s3Client.send(cmd);
+    const ct = res.ContentType || '';
+    const cl = res.ContentLength || 0;
+    if (cl > this.maxFileSize) { const err = new Error(`Uploaded file size ${cl} exceeds maximum`); err.code = 'FILE_TOO_LARGE'; throw err; }
+    if (declaredMime === 'application/pdf' && cl > 0) {
+      try {
+        const { GetObjectCommand } = require('@aws-sdk/client-s3');
+        const gCmd = new GetObjectCommand({ Bucket: this.bucket, Key: key, Range: 'bytes=0-4' });
+        const gRes = await s3Client.send(gCmd);
+        const chunks = []; for await (const c of gRes.Body) { chunks.push(c); }
+        if (Buffer.concat(chunks).toString('utf8') !== '%PDF-') { const err = new Error('Invalid PDF header'); err.code = 'INVALID_PDF_HEADER'; throw err; }
+      } catch (e) { if (e.code === 'INVALID_PDF_HEADER') throw e; }
+    }
+    return { valid: ct === declaredMime && cl === declaredSize, contentType: ct, contentLength: cl };
+  }
+
   generateKey({ tenantId, invoiceId, fileName }) {
     const safeName = this._sanitizeFilename(fileName);
     return this._generateKey(tenantId, invoiceId, safeName);
@@ -365,14 +390,14 @@ const STORAGE_ERROR_HINTS = Object.freeze({
  *
  * Result states:
  *
- * - `'healthy'` — `HeadBucket` returned 200. Bucket exists and creds work.
- * - `'in_memory'` — In-memory fallback is active (`NODE_ENV === 'test'` or
+ * - `'healthy'` â€” `HeadBucket` returned 200. Bucket exists and creds work.
+ * - `'in_memory'` â€” In-memory fallback is active (`NODE_ENV === 'test'` or
  *   `STORAGE_IN_MEMORY === 'true'`); the probe is a no-op.
- * - `'disabled'` — Operator disabled the probe via
+ * - `'disabled'` â€” Operator disabled the probe via
  *   `S3_HEALTHCHECK_ENABLED=false`.
- * - `'not_configured'` — Either `S3_BUCKET` or `AWS_ACCESS_KEY_ID` is
+ * - `'not_configured'` â€” Either `S3_BUCKET` or `AWS_ACCESS_KEY_ID` is
  *   absent; the probe cannot run.
- * - `'unhealthy'` — `HeadBucket` failed. `error.code` is an AWS error name,
+ * - `'unhealthy'` â€” `HeadBucket` failed. `error.code` is an AWS error name,
  *   `error.hint` is a short actionable message.
  *
  * Credentials, endpoint URLs, and other sensitive error fields are
@@ -452,7 +477,7 @@ async function probeS3Connectivity(options = {}) {
 
 /**
  * Runs the S3 connectivity probe once at process start. Failures are logged
- * with a clear, actionable error but never propagated to caller code —
+ * with a clear, actionable error but never propagated to caller code â€”
  * startup should still proceed (the readiness probe surfaces storage
  * misconfiguration to orchestrators once the HTTP server is listening).
  *
@@ -502,3 +527,4 @@ module.exports.hasCredentialsConfigured = hasCredentialsConfigured;
 module.exports.SAFE_ERROR_NAMES = SAFE_ERROR_NAMES;
 module.exports.PROBE_TIMEOUT_MS = PROBE_TIMEOUT_MS;
 module.exports.logger = logger;
+
