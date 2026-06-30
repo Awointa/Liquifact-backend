@@ -524,3 +524,9 @@ psql $DATABASE_URL -c "\dt retention_*"
 - Security Team: security@liquifact.com  
 - Legal Compliance: legal@liquifact.com
 - Engineering Lead: eng@liquifact.com
+
+## Concurrency Control & Security
+Legal hold creation is now protected by a partial unique index (`unique_active_legal_hold_per_invoice`). 
+- This enforces at-most-one active hold per invoice at the database level.
+- Concurrent requests that attempt to create duplicate holds will be rejected by PostgreSQL with a `SequelizeUniqueConstraintError`.
+- The application layer maps this to a `409 Conflict` response.
