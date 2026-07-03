@@ -1383,7 +1383,15 @@ The backend supports durable idempotency keys for funding operations to safely r
 
 ### Amount validation
 
-`amountStroops` is the on-chain principal unit. The service enforces strict format rules **before any database write**:
+`amountStroops` is the on-chain principal unit. `POST /api/invest/fund-invoice` and the persistence service share the same `validateAmountStroops` helper so invalid values are rejected before any escrow submission or database write. Clients must send `amountStroops` as a JSON string, not a number:
+
+```json
+{
+  "invoiceId": "inv_7788",
+  "investorAddress": "GDRXE2BQUC3AZNPVFSCEZ76NJ3WWL25FYFK6RGZGIEKWE4SOUJ3LNLRK",
+  "amountStroops": "10000000"
+}
+```
 
 | Rule | Detail |
 |------|--------|

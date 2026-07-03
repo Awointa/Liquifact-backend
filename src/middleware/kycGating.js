@@ -1,5 +1,14 @@
 const { CAPITAL_MOVING_STATES } = require('../services/invoiceStateMachine');
+const kycService = require('../services/kycService');
 
+/**
+ * Blocks invoice state transitions that move capital unless the user has KYC.
+ *
+ * @param {import('express').Request} req - Express request.
+ * @param {import('express').Response} res - Express response.
+ * @param {import('express').NextFunction} next - Express next callback.
+ * @returns {void}
+ */
 function kycGatingMiddleware(req, res, next) {
     const targetState = req.body.state || req.body.targetState;
     
@@ -13,5 +22,45 @@ function kycGatingMiddleware(req, res, next) {
     }
     next();
 }
+
+/**
+ * Requires the authenticated JWT principal's SME to be verified or exempted.
+ *
+ * @param {import('express').Request} req - Express request.
+ * @param {import('express').Response} res - Express response.
+ * @param {import('express').NextFunction} next - Express next callback.
+ * @returns {Promise<void>}
+ */
+async function requireKycForFunding(req, res, next) {
+    const smeId = req.user && req.user.smeId;
+
+    if (!smeId) {
+        return res.status(400).json({
+            error: {
+                code: 'MISSING_SME_ID',
+                message: 'Authenticated principal is missing smeId.',
+                retryable: false,
+            },
+        });
+    }
+
+    try {
+        const { status } = await kycService.getKycStatus(smeId);
+        if (!kycService.canFundWithKycStatus(status)) {
+            return res.status(403).json({
+                error: {
+                    code: 'KYC_GATE_FAILED',
+                    message: `SME KYC status '${status}' does not permit funding operations.`,
+                    retryable: false,
+                },
+            });
+        }
+        return next();
+    } catch (err) {
+        return next(err);
+    }
+}
+
+kycGatingMiddleware.requireKycForFunding = requireKycForFunding;
 
 module.exports = kycGatingMiddleware;

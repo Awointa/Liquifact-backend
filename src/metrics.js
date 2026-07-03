@@ -46,6 +46,9 @@ try {
    * @implements {import('prom-client').Registry}
    */
   class RegistryShim {
+    /**
+     * Creates an empty in-memory registry shim.
+     */
     constructor() {
       this.contentType = 'text/plain';
       this._items = new Map();
@@ -85,6 +88,8 @@ try {
    */
   class LabelledMetricShim {
     /**
+     * Creates a labelled metric shim and registers it.
+     *
      * @param {object} [config]
      * @param {string} [config.name]
      * @param {string[]} [config.labelNames]
@@ -103,6 +108,8 @@ try {
       }
     }
     /**
+     * Normalizes positional or object label values.
+     *
      * @param {unknown[]|object} args - Raw label arguments.
      * @returns {Record<string, string>}
      */
@@ -122,6 +129,8 @@ try {
       return labels;
     }
     /**
+     * Builds the internal hash key for a label set.
+     *
      * @param {Record<string, string>} labels - Normalized label map.
      * @returns {string}
      */
@@ -129,6 +138,8 @@ try {
       return JSON.stringify(labels);
     }
     /**
+     * Finds or initializes the storage entry for labels.
+     *
      * @param {Record<string, string>} labels - Normalized label map.
      * @returns {{ labels: Record<string, string>, value: number }}
      */
@@ -143,6 +154,8 @@ try {
       return this.hashMap[key];
     }
     /**
+     * Returns a metric child facade bound to labels.
+     *
      * @param {...unknown} values - Positional or object labels.
      * @returns {object}
      */
@@ -156,6 +169,8 @@ try {
       };
     }
     /**
+     * Reads the current value for a label set.
+     *
      * @param {Record<string, string>} [labels={}] - Label set to inspect.
      * @returns {number}
      */
@@ -163,7 +178,11 @@ try {
       const entry = this.hashMap[this._hashKey(labels)];
       return entry ? entry.value : 0;
     }
-    /** @returns {void} */
+    /**
+     * Resets all stored label values.
+     *
+     * @returns {void}
+     */
     reset() {
       this.hashMap = {};
     }
@@ -330,7 +349,7 @@ const JOB_TYPE_ENUM = Object.freeze(['maturity_reminder', 'webhook_replay', 'unk
  * Bounded enum of allowed `outcome` label values for webhook replay metrics.
  * @readonly
  */
-const WEBHOOK_REPLAY_OUTCOME_ENUM = Object.freeze([
+const _WEBHOOK_REPLAY_OUTCOME_ENUM = Object.freeze([
   'success',
   'failure',
   'not_found',
@@ -496,6 +515,28 @@ function stopMetricsRefresh() {
 function normalizeJobType(raw) {
   const str = typeof raw === 'string' ? raw : '';
   return JOB_TYPE_ENUM.includes(str) ? str : 'unknown';
+}
+
+/**
+ * Maps a raw reminder delivery error to a bounded Prometheus label value.
+ *
+ * @param {unknown} err - Raw error object, code, or message.
+ * @returns {string} Bounded label value from {@link REMINDER_REASON_ENUM}.
+ */
+function normalizeReminderReason(err) {
+  const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : '';
+  const message = err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err || '');
+  const value = `${code} ${message}`.toLowerCase();
+
+  let reason = 'unknown';
+  if (value.includes('timeout') || value.includes('timed out') || value.includes('etimedout')) {
+    reason = 'smtp_timeout';
+  } else if (value.includes('template')) {
+    reason = 'template_error';
+  } else if (value.includes('reject') || value.includes('smtp') || value.includes('recipient')) {
+    reason = 'smtp_reject';
+  }
+  return REMINDER_REASON_ENUM.includes(reason) ? reason : 'unknown';
 }
 
 /**
@@ -779,6 +820,50 @@ const escrowReconciliationDriftAlertsTotal = new client.Counter({
 });
 
 /**
+ * Counter: Maturity reminder email delivery attempts.
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeliveryAttemptsTotal = new client.Counter({
+  name: 'maturity_reminder_delivery_attempts_total',
+  help: 'Total number of maturity reminder delivery attempts',
+  labelNames: ['reason', 'job_type'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Successful maturity reminder deliveries.
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeliverySuccessTotal = new client.Counter({
+  name: 'maturity_reminder_delivery_success_total',
+  help: 'Total number of successful maturity reminder deliveries',
+  labelNames: ['job_type'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Maturity reminder dead-letter writes.
+ * @type {import('prom-client').Counter}
+ */
+const maturityReminderDeadLetterTotal = new client.Counter({
+  name: 'maturity_reminder_dead_letter_total',
+  help: 'Total number of maturity reminder jobs moved to the dead-letter path',
+  labelNames: ['reason', 'job_type'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Contract WASM version mismatch alerts.
+ * @type {import('prom-client').Counter}
+ */
+const contractWasmVersionMismatchAlertsTotal = new client.Counter({
+  name: 'contract_wasm_version_mismatch_alerts_total',
+  help: 'Total number of contract WASM version mismatch alerts',
+  labelNames: ['status'],
+  registers: [registry],
+});
+
+/**
  * Counter: Failed idempotency response storage attempts after all retries exhausted.
  * Labelled by key prefix (first 8 chars) for operational visibility without exposing full keys.
  * @type {import('prom-client').Counter}
@@ -798,6 +883,77 @@ const bodySizeLimitRejectionsTotal = new client.Counter({
   name: 'body_size_limit_rejections_total',
   help: 'Total number of request body-size limit rejections (413 Payload Too Large), labelled by limit type',
   labelNames: ['type'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Cache middleware/store errors.
+ * @type {import('prom-client').Counter}
+ */
+const cacheStoreErrorsTotal = new client.Counter({
+  name: 'cache_store_errors_total',
+  help: 'Total number of cache store errors handled fail-open',
+  registers: [registry],
+});
+
+/**
+ * Counter: Redis cache fail-open events.
+ * @type {import('prom-client').Counter}
+ */
+const redisCacheFailOpenTotal = new client.Counter({
+  name: 'redis_cache_fail_open_total',
+  help: 'Total number of Redis cache fail-open events',
+  registers: [registry],
+});
+
+/**
+ * Counter: Footprint cache hits.
+ * @type {import('prom-client').Counter}
+ */
+const footprintCacheHitsTotal = new client.Counter({
+  name: 'footprint_cache_hits_total',
+  help: 'Total number of footprint cache hits',
+  registers: [registry],
+});
+
+/**
+ * Counter: Footprint cache misses.
+ * @type {import('prom-client').Counter}
+ */
+const footprintCacheMissesTotal = new client.Counter({
+  name: 'footprint_cache_misses_total',
+  help: 'Total number of footprint cache misses',
+  registers: [registry],
+});
+
+/**
+ * Counter: Footprint cache evictions.
+ * @type {import('prom-client').Counter}
+ */
+const footprintCacheEvictionsTotal = new client.Counter({
+  name: 'footprint_cache_evictions_total',
+  help: 'Total number of footprint cache evictions',
+  registers: [registry],
+});
+
+/**
+ * Counter: Soroban circuit breaker state transitions.
+ * @type {import('prom-client').Counter}
+ */
+const sorobanCircuitBreakerStateTransitionsTotal = new client.Counter({
+  name: 'soroban_circuit_breaker_state_transitions_total',
+  help: 'Total number of Soroban circuit breaker state transitions',
+  labelNames: ['breaker_name', 'from_state', 'to_state'],
+  registers: [registry],
+});
+
+/**
+ * Gauge: Overall service readiness state.
+ * @type {import('prom-client').Gauge}
+ */
+const readinessGauge = new client.Gauge({
+  name: 'readiness_state',
+  help: 'Overall service readiness state: 1 ready, 0.5 degraded, 0 not ready',
   registers: [registry],
 });
 
@@ -844,65 +1000,46 @@ const sorobanRpcRetryCausesTotal = new client.Counter({
  */
 function getRegistry() {
   return registry;
- * Registers a job queue for metric collection.
- * @param {object} queue - Queue instance with a getStats() method.
- * @returns {void}
- */
-function registerJobQueue(queue) {
-  registeredJobQueues.add(queue);
-}
-
-/**
- * Registers a worker for metric collection.
- * @param {object} worker - Worker instance with a getStats() method.
- * @returns {void}
- */
-function registerWorker(worker) {
-  registeredWorkers.add(worker);
 }
 
 module.exports = {
-  registry,
-  getRegistry,
-  metricsAuth,
-  metricsHandler,
-  registerJobQueue,
-  registerWorker,
-  refreshMetrics,
-  resetMetricsForTests,
-  escrowIndexerEventsProcessedTotal,
-  escrowIndexerEventsSkippedTotal,
-  escrowIndexerCycleFailuresTotal,
-  escrowIndexerLastCursorAdvanceTimestampSeconds,
-  escrowReconciliationMismatches,
-  maturityReminderDeliveryAttemptsTotal,
-  maturityReminderDeliverySuccessTotal,
-  maturityReminderDeadLetterTotal,
+  bodySizeLimitRejectionsTotal,
+  cacheStoreErrorsTotal,
   contractWasmVersionMismatchAlertsTotal,
-  readinessGauge,
-  escrowIndexerLastCursorAdvanceTimestampSeconds,
+  escrowIndexerCycleFailuresTotal,
   escrowIndexerEventsProcessedTotal,
   escrowIndexerEventsSkippedTotal,
-  escrowIndexerCycleFailuresTotal,
-  escrowReconciliationMismatches,
-  escrowReconciliationMismatchedInvoicesGauge,
-  escrowReconciliationDriftMagnitudeGauge,
+  escrowIndexerLastCursorAdvanceTimestampSeconds,
   escrowReconciliationDriftAlertsTotal,
-  maturityReminderDeliveryAttemptsTotal,
-  maturityReminderDeliverySuccessTotal,
-  maturityReminderDeadLetterTotal,
+  escrowReconciliationDriftMagnitudeGauge,
+  escrowReconciliationMismatchedInvoicesGauge,
+  escrowReconciliationMismatches,
+  footprintCacheEvictionsTotal,
   footprintCacheHitsTotal,
   footprintCacheMissesTotal,
-  footprintCacheEvictionsTotal,
+  getRegistry,
+  idempotencyStorageFailureTotal,
+  maturityReminderDeadLetterTotal,
+  maturityReminderDeliveryAttemptsTotal,
+  maturityReminderDeliverySuccessTotal,
+  metricsAuth,
+  metricsHandler,
+  normalizeJobType,
+  normalizeReminderReason,
+  normalizeSorobanRetryCause,
+  normalizeSorobanRpcMethod,
+  normalizeSorobanRpcOutcome,
+  readinessGauge,
+  redisCacheFailOpenTotal,
+  refreshMetrics,
+  registerJobQueue,
+  registerWorker,
+  registry,
+  resetMetricsForTests,
   sorobanCircuitBreakerStateTransitionsTotal,
   sorobanRpcCallDurationSeconds,
   sorobanRpcRetryCausesTotal,
-  webhookReplayTotal,
-  bodySizeLimitRejectionsTotal,
-  normalizeJobType,
-  normalizeSorobanRpcMethod,
-  normalizeSorobanRpcOutcome,
-  normalizeSorobanRetryCause,
   startMetricsRefresh,
   stopMetricsRefresh,
+  webhookReplayTotal,
 };
