@@ -24,9 +24,80 @@
  * @module middleware/cache
  */
 
+const crypto = require('crypto');
 const logger = require('../logger');
 const { cacheStoreErrorsTotal } = require('../metrics');
 const { getInvestorLockPrincipalScope } = require('../utils/investorLockScope');
+
+const SENSITIVE_QUERY_PARAMS = new Set(['funderAddress']);
+
+/**
+ * Hashes cache-key components that can contain wallet or funder identifiers.
+ *
+ * @param {unknown} value - Sensitive cache key component.
+ * @returns {string} Stable SHA-256 cache-key segment.
+ */
+function hashCacheComponent(value) {
+  return crypto
+    .createHash('sha256')
+    .update(String(value || ''), 'utf8')
+    .digest('hex');
+}
+
+/**
+ * Converts an Express query value into deterministic key segments.
+ *
+ * @param {string} name - Query parameter name.
+ * @param {unknown} value - Query parameter value.
+ * @returns {string[]} Encoded query segments.
+ */
+function encodeQueryValue(name, value) {
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .map((entry) => {
+      const safeValue = SENSITIVE_QUERY_PARAMS.has(name)
+        ? `sha256:${hashCacheComponent(entry)}`
+        : String(entry);
+      return `${encodeURIComponent(name)}=${encodeURIComponent(safeValue)}`;
+    })
+    .sort();
+}
+
+/**
+ * Builds a deterministic path+query segment for investor lock cache keys.
+ *
+ * Sensitive query values are hashed, and query parameters are sorted so
+ * equivalent requests produce one cache key regardless of query-string order.
+ *
+ * @param {import('express').Request} req - The Express request.
+ * @returns {string} Stable request target key.
+ */
+function makeInvestorRequestTargetKey(req) {
+  const originalUrl = req.originalUrl || '';
+  const path = req.path || originalUrl.split('?')[0] || '';
+  const query = req.query && typeof req.query === 'object' ? req.query : {};
+  const queryKeys = Object.keys(query).sort();
+
+  if (queryKeys.length === 0) {
+    return path;
+  }
+
+  const queryString = queryKeys
+    .flatMap((name) => encodeQueryValue(name, query[name]))
+    .join('&');
+
+  return `${path}?${queryString}`;
+}
+
+/**
+ * Builds a hashed principal scope for investor-lock cache isolation.
+ *
+ * @param {import('express').Request} req - The Express request.
+ * @returns {string} Principal scope safe for cache keys.
+ */
+function makeInvestorPrincipalScopeKey(req) {
+  return `sha256:${hashCacheComponent(getInvestorLockPrincipalScope(req))}`;
+}
 
 /**
  * Creates an Express middleware that caches JSON responses with a TTL.
@@ -131,7 +202,7 @@ function makeMarketplaceKey(req) {
  */
 function makeInvestorLocksKey(req) {
   const tenantId = req.tenantId || 'unknown';
-  return 'investor:locks:' + tenantId + ':' + getInvestorLockPrincipalScope(req) + ':' + req.originalUrl;
+  return 'investor:locks:' + tenantId + ':' + makeInvestorPrincipalScopeKey(req) + ':' + makeInvestorRequestTargetKey(req);
 }
 
 /**
@@ -143,7 +214,7 @@ function makeInvestorLocksKey(req) {
  */
 function makeInvestorLockKey(req) {
   const tenantId = req.tenantId || 'unknown';
-  return 'investor:lock:' + tenantId + ':' + getInvestorLockPrincipalScope(req) + ':' + req.params.invoiceId + ':' + req.query.funderAddress;
+  return 'investor:lock:' + tenantId + ':' + makeInvestorPrincipalScopeKey(req) + ':' + req.params.invoiceId + ':sha256:' + hashCacheComponent(req.query.funderAddress);
 }
 
 /**
@@ -175,4 +246,5 @@ module.exports = {
   makeMarketplaceKey,
   makeInvestorLocksKey,
   makeInvestorLockKey,
+  hashCacheComponent,
 };

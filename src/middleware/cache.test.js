@@ -1,4 +1,11 @@
-const { cacheResponse, invalidatePrefix, makeMarketplaceKey, makeInvestorLocksKey, makeInvestorLockKey } = require('./cache');
+const {
+  cacheResponse,
+  hashCacheComponent,
+  invalidatePrefix,
+  makeMarketplaceKey,
+  makeInvestorLocksKey,
+  makeInvestorLockKey,
+} = require('./cache');
 const { MemoryCacheStore, getSharedStore } = require('../services/cacheStore');
 const logger = require('../logger');
 const { cacheStoreErrorsTotal } = require('../metrics');
@@ -91,6 +98,53 @@ describe('cacheResponse', () => {
       expect(store.get('custom:456')).toEqual({ data: 'keyed' });
       done();
     });
+  });
+
+  it('keeps single investor-lock cached responses isolated by funder for the same invoice', () => {
+    const middleware = cacheResponse({ ttl: 5000, store, keyFn: makeInvestorLockKey });
+    const funderAReq = {
+      tenantId: 'tenant-a',
+      params: { invoiceId: 'inv_123' },
+      query: { funderAddress: 'GAAA' },
+      user: { funderAddress: 'GAAA' },
+    };
+    const funderARes = createMockRes();
+    let funderANextCalled = false;
+
+    middleware(funderAReq, funderARes, () => {
+      funderANextCalled = true;
+      funderARes.json({ invoiceId: 'inv_123', funderAddress: 'GAAA' });
+    });
+
+    const funderBReq = {
+      tenantId: 'tenant-a',
+      params: { invoiceId: 'inv_123' },
+      query: { funderAddress: 'GBBB' },
+      user: { funderAddress: 'GBBB' },
+    };
+    const funderBRes = createMockRes();
+    let funderBNextCalled = false;
+
+    middleware(funderBReq, funderBRes, () => {
+      funderBNextCalled = true;
+      funderBRes.json({ invoiceId: 'inv_123', funderAddress: 'GBBB' });
+    });
+
+    const funderBRepeatRes = createMockRes();
+    let funderBRepeatNextCalled = false;
+
+    middleware(funderBReq, funderBRepeatRes, () => {
+      funderBRepeatNextCalled = true;
+    });
+
+    expect(funderANextCalled).toBe(true);
+    expect(funderARes.headers['X-Cache']).toBe('MISS');
+    expect(funderBNextCalled).toBe(true);
+    expect(funderBRes.headers['X-Cache']).toBe('MISS');
+    expect(funderBRes.body).toEqual({ invoiceId: 'inv_123', funderAddress: 'GBBB' });
+    expect(funderBRepeatNextCalled).toBe(false);
+    expect(funderBRepeatRes.headers['X-Cache']).toBe('HIT');
+    expect(funderBRepeatRes.body).toEqual({ invoiceId: 'inv_123', funderAddress: 'GBBB' });
   });
 
   it('falls through to handler when cache store get throws', (done) => {
@@ -315,20 +369,109 @@ describe('makeMarketplaceKey', () => {
 });
 
 describe('makeInvestorLocksKey', () => {
-  it('includes tenantId and originalUrl in the cache key', () => {
-    const req = { tenantId: 'tenant-beta', originalUrl: '/api/investor/locks?funderAddress=GABC' };
-    expect(makeInvestorLocksKey(req)).toBe('investor:locks:tenant-beta:/api/investor/locks?funderAddress=GABC');
+  it('includes tenantId, hashed principal scope, and hashed funder query in the cache key', () => {
+    const req = {
+      tenantId: 'tenant-beta',
+      path: '/api/investor/locks',
+      originalUrl: '/api/investor/locks?funderAddress=GABC',
+      query: { funderAddress: 'GABC' },
+      user: { funderAddress: 'GABC' },
+    };
+
+    const key = makeInvestorLocksKey(req);
+
+    expect(key).toBe(
+      `investor:locks:tenant-beta:sha256:${hashCacheComponent('funder:GABC')}` +
+      `:/api/investor/locks?funderAddress=sha256%3A${hashCacheComponent('GABC')}`
+    );
+    expect(key).not.toContain('GABC');
+  });
+
+  it('uses a stable key for the same funder and pagination request', () => {
+    const req = {
+      tenantId: 'tenant-beta',
+      path: '/api/investor/locks',
+      query: { page: '2', limit: '10', funderAddress: 'GABC' },
+      user: { funderAddress: 'GABC' },
+    };
+
+    expect(makeInvestorLocksKey(req)).toBe(makeInvestorLocksKey(req));
+  });
+
+  it('separates list keys by tenant, pagination, and bound funder', () => {
+    const base = {
+      path: '/api/investor/locks',
+      query: { page: '1', limit: '10', funderAddress: 'GABC' },
+      user: { funderAddress: 'GABC' },
+    };
+    const sameTenantNextPage = { ...base, tenantId: 'tenant-a', query: { ...base.query, page: '2' } };
+    const otherTenant = { ...base, tenantId: 'tenant-b' };
+    const otherFunder = {
+      ...base,
+      tenantId: 'tenant-a',
+      query: { ...base.query, funderAddress: 'GDEF' },
+      user: { funderAddress: 'GDEF' },
+    };
+
+    const key = makeInvestorLocksKey({ ...base, tenantId: 'tenant-a' });
+
+    expect(key).not.toBe(makeInvestorLocksKey(sameTenantNextPage));
+    expect(key).not.toBe(makeInvestorLocksKey(otherTenant));
+    expect(key).not.toBe(makeInvestorLocksKey(otherFunder));
+  });
+
+  it('builds a deterministic key when funderAddress is omitted', () => {
+    const req = {
+      tenantId: 'tenant-beta',
+      path: '/api/investor/locks',
+      query: { page: '1', limit: '20' },
+      user: { role: 'admin' },
+    };
+
+    expect(makeInvestorLocksKey(req)).toBe(
+      `investor:locks:tenant-beta:sha256:${hashCacheComponent('admin:admin')}` +
+      ':/api/investor/locks?limit=20&page=1'
+    );
   });
 });
 
 describe('makeInvestorLockKey', () => {
-  it('includes tenantId, invoiceId, and funderAddress', () => {
+  it('includes tenantId, invoiceId, hashed principal scope, and hashed funderAddress', () => {
     const req = {
       tenantId: 'tenant-gamma',
       params: { invoiceId: 'inv_123' },
       query: { funderAddress: 'GXXX' },
+      user: { funderAddress: 'GXXX' },
     };
-    expect(makeInvestorLockKey(req)).toBe('investor:lock:tenant-gamma:inv_123:GXXX');
+
+    const key = makeInvestorLockKey(req);
+
+    expect(key).toBe(
+      `investor:lock:tenant-gamma:sha256:${hashCacheComponent('funder:GXXX')}:inv_123:sha256:${hashCacheComponent('GXXX')}`
+    );
+    expect(key).not.toContain('GXXX');
+  });
+
+  it('separates single-lock keys for same invoice across different funders', () => {
+    const base = {
+      tenantId: 'tenant-gamma',
+      params: { invoiceId: 'inv_123' },
+    };
+    const funderA = { ...base, query: { funderAddress: 'GAAA' }, user: { funderAddress: 'GAAA' } };
+    const funderB = { ...base, query: { funderAddress: 'GBBB' }, user: { funderAddress: 'GBBB' } };
+
+    expect(makeInvestorLockKey(funderA)).not.toBe(makeInvestorLockKey(funderB));
+  });
+
+  it('uses the same single-lock key for identical repeated requests', () => {
+    const req = {
+      tenantId: 'tenant-gamma',
+      params: { invoiceId: 'inv_123' },
+      query: { funderAddress: 'GAAA' },
+      user: { funderAddress: 'GAAA' },
+    };
+
+    expect(makeInvestorLockKey(req)).toBe(makeInvestorLockKey(req));
   });
 });
 
