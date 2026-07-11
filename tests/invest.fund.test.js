@@ -43,9 +43,13 @@ jest.mock('../src/config/escrowMap', () => ({
   },
 }));
 
-jest.mock('../src/services/investorCommitment', () => ({
-  persistCommitment: jest.fn(),
-}));
+jest.mock('../src/services/investorCommitment', () => {
+  const actual = jest.requireActual('../src/services/investorCommitment');
+  return {
+    ...actual,
+    persistCommitment: jest.fn(),
+  };
+});
 
 jest.mock('../src/middleware/idempotency', () => (req, res, next) => next());
 
@@ -226,6 +230,50 @@ describe('POST /api/invest/fund-invoice — body validation (400)', () => {
       .set('Authorization', `Bearer ${token()}`)
       .set('x-tenant-id', TENANT_ID)
       .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: 'abc' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
+  });
+
+  it('rejects scientific-notation string amountStroops', async () => {
+    const res = await agent()
+      .post('/api/invest/fund-invoice')
+      .set('Authorization', `Bearer ${token()}`)
+      .set('x-tenant-id', TENANT_ID)
+      .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: '1e7' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
+  });
+
+  it('rejects decimal string amountStroops', async () => {
+    const res = await agent()
+      .post('/api/invest/fund-invoice')
+      .set('Authorization', `Bearer ${token()}`)
+      .set('x-tenant-id', TENANT_ID)
+      .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: '100.0' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
+  });
+
+  it('rejects leading-zero string amountStroops', async () => {
+    const res = await agent()
+      .post('/api/invest/fund-invoice')
+      .set('Authorization', `Bearer ${token()}`)
+      .set('x-tenant-id', TENANT_ID)
+      .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: '007' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
+  });
+
+  it('rejects unsafe integer number amountStroops', async () => {
+    const res = await agent()
+      .post('/api/invest/fund-invoice')
+      .set('Authorization', `Bearer ${token()}`)
+      .set('x-tenant-id', TENANT_ID)
+      .send({
+        invoiceId: VALID_INVOICE,
+        investorAddress: VALID_ADDRESS,
+        amountStroops: Number.MAX_SAFE_INTEGER + 1,
+      });
     expect(res.status).toBe(400);
     expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
   });
