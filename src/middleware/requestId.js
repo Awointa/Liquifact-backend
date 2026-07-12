@@ -18,6 +18,7 @@
  */
 
 const { createRequestLogger } = require('../logger');
+const { run } = require('../requestContext');
 const {
   MAX_REQUEST_IDENTIFIER_LENGTH,
   REQUEST_IDENTIFIER_PATTERN,
