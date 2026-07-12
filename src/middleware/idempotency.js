@@ -58,6 +58,30 @@ const INITIAL_BACKOFF_MS = 100;
 const MAX_BACKOFF_MS = 2000;
 
 /**
+ * Maximum age (ms) of a non-completed placeholder before it is treated as orphaned.
+ */
+const ORPHAN_IN_FLIGHT_TIMEOUT_MS = (() => {
+  const raw = parseInt(process.env.IDEMPOTENCY_ORPHAN_TIMEOUT_MS || '', 10);
+  return Number.isFinite(raw) && raw >= 1000 ? raw : 120000;
+})();
+
+/**
+ * Build an RFC 7807 problem+json body for an idempotency-key conflict.
+ * @param {object} req - Express request
+ * @param {string} detail - Human-readable reason
+ * @returns {object}
+ */
+function buildConflict(req, detail) {
+  return createProblemDetails({
+    type: `${LIQUifact_PROBLEM_BASE || 'https://liquifact.com/probs'}/conflict`,
+    title: 'Conflict',
+    status: 409,
+    detail,
+    requestId: req.id || req.headers['x-request-id'] || 'unknown',
+  });
+}
+
+/**
  * Get TTL in hours from env or default.
  * @returns {number}
  */
