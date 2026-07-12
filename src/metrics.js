@@ -838,27 +838,26 @@ const sorobanRpcRetryCausesTotal = new client.Counter({
   registers: [registry],
 });
 
-/**
- * Get the shared Prometheus registry instance.
- * @returns {import('prom-client').Registry} The registry
- */
+const footprintCacheHitsTotal = new client.Counter({
+  name: 'footprint_cache_hits_total',
+  help: 'Total footprint cache hits',
+  registers: [registry],
+});
+
+const footprintCacheMissesTotal = new client.Counter({
+  name: 'footprint_cache_misses_total',
+  help: 'Total footprint cache misses',
+  registers: [registry],
+});
+
+const footprintCacheEvictionsTotal = new client.Counter({
+  name: 'footprint_cache_evictions_total',
+  help: 'Total footprint cache evictions',
+  registers: [registry],
+});
+
 function getRegistry() {
   return registry;
- * Registers a job queue for metric collection.
- * @param {object} queue - Queue instance with a getStats() method.
- * @returns {void}
- */
-function registerJobQueue(queue) {
-  registeredJobQueues.add(queue);
-}
-
-/**
- * Registers a worker for metric collection.
- * @param {object} worker - Worker instance with a getStats() method.
- * @returns {void}
- */
-function registerWorker(worker) {
-  registeredWorkers.add(worker);
 }
 
 module.exports = {
@@ -870,16 +869,6 @@ module.exports = {
   registerWorker,
   refreshMetrics,
   resetMetricsForTests,
-  escrowIndexerEventsProcessedTotal,
-  escrowIndexerEventsSkippedTotal,
-  escrowIndexerCycleFailuresTotal,
-  escrowIndexerLastCursorAdvanceTimestampSeconds,
-  escrowReconciliationMismatches,
-  maturityReminderDeliveryAttemptsTotal,
-  maturityReminderDeliverySuccessTotal,
-  maturityReminderDeadLetterTotal,
-  contractWasmVersionMismatchAlertsTotal,
-  readinessGauge,
   escrowIndexerLastCursorAdvanceTimestampSeconds,
   escrowIndexerEventsProcessedTotal,
   escrowIndexerEventsSkippedTotal,
@@ -888,15 +877,11 @@ module.exports = {
   escrowReconciliationMismatchedInvoicesGauge,
   escrowReconciliationDriftMagnitudeGauge,
   escrowReconciliationDriftAlertsTotal,
-  maturityReminderDeliveryAttemptsTotal,
-  maturityReminderDeliverySuccessTotal,
-  maturityReminderDeadLetterTotal,
+  sorobanRpcCallDurationSeconds,
+  sorobanRpcRetryCausesTotal,
   footprintCacheHitsTotal,
   footprintCacheMissesTotal,
   footprintCacheEvictionsTotal,
-  sorobanCircuitBreakerStateTransitionsTotal,
-  sorobanRpcCallDurationSeconds,
-  sorobanRpcRetryCausesTotal,
   webhookReplayTotal,
   bodySizeLimitRejectionsTotal,
   normalizeJobType,
