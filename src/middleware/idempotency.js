@@ -10,36 +10,19 @@
  *   - CONFLICT: different fingerprint - returns 409
  *
  * Accepts an `Idempotency-Key` header validated against the existing
-<<<<<<< test/idempotency-36-mismatch-replay
- * IDEMPOTENCY_KEY_PATTERN from escrowSubmit.js.  Stores key →
- * (request fingerprint, status, response) with a TTL in the
- * `idempotency_keys` table.  Returns the cached response on duplicate
- * keys; returns 409 when the same key is reused with a different request
- * body fingerprint.
-=======
  * IDEMPOTENCY_KEY_PATTERN from escrowSubmit.js. Stores key +
  * (request fingerprint, status, response) with a TTL in the `idempotency_keys` table.
  * Returns the cached response on duplicate keys; returns 409 when the same key
  * is reused with a different request body fingerprint.
->>>>>>> main
  *
  * Security:
  *  - Keys are validated against a strict pattern before any DB access.
  *  - Request body is hashed (SHA-256) before storage — no raw payload
  *    is persisted.
-<<<<<<< test/idempotency-36-mismatch-replay
- *  - Keys expire after a configurable TTL (default 24 h) and the
- *    middleware itself purges expired rows on lookup so a stale, un-purged
- *    row never causes a stale replay or a spurious 409.
- *  - In-flight placeholders are bounded by ORPHAN_IN_FLIGHT_TIMEOUT_MS so
- *    a handler crash or process restart cannot leave a key permanently
- *    locked until the retention TTL expires.
-=======
  *  - Keys expire after a configurable TTL (default 24 h) and are
  *    automatically purged.
  *  - Cached bodies are keyed by idempotency_key only and never leak across
  *    tenants or requests.
->>>>>>> main
  */
 
 const crypto = require('crypto');
@@ -57,17 +40,6 @@ try {
 const DEFAULT_TTL_HOURS = 24;
 
 /**
-<<<<<<< test/idempotency-36-mismatch-replay
- * Maximum age (ms) of a non-completed placeholder before it is treated as
- * an orphaned in-flight lock and removed. Bounded so a handler crash or
- * process restart cannot lock a key for the full retention TTL.
- * Configurable via IDEMPOTENCY_ORPHAN_TIMEOUT_MS (must be >= 1000 ms).
- */
-const ORPHAN_IN_FLIGHT_TIMEOUT_MS = (() => {
-  const raw = parseInt(process.env.IDEMPOTENCY_ORPHAN_TIMEOUT_MS || '', 10);
-  return Number.isFinite(raw) && raw >= 1000 ? raw : 120000;
-})();
-=======
  * Maximum number of retry attempts for response storage persistence.
  * @type {number}
  */
@@ -84,7 +56,6 @@ const INITIAL_BACKOFF_MS = 100;
  * @type {number}
  */
 const MAX_BACKOFF_MS = 2000;
->>>>>>> main
 
 /**
  * Get TTL in hours from env or default.
@@ -109,21 +80,6 @@ function fingerprint(body) {
 }
 
 /**
-<<<<<<< test/idempotency-36-mismatch-replay
- * Build an RFC 7807 problem+json body for an idempotency-key conflict.
- * @param {object} req - Express request (for request-id correlation)
- * @param {string} detail - Human-readable reason
- * @returns {object}
- */
-function buildConflict(req, detail) {
-  return createProblemDetails({
-    type: `${LIQUifact_PROBLEM_BASE || 'https://liquifact.com/probs'}/conflict`,
-    title: 'Conflict',
-    status: 409,
-    detail,
-    requestId: req.id || req.headers['x-request-id'] || 'unknown',
-  });
-=======
  * Sleep for a specified number of milliseconds.
  * @param {number} ms - Milliseconds to sleep.
  * @returns {Promise<void>}
@@ -208,36 +164,11 @@ async function persistResponse(trx, key, status, body) {
       'idempotency: failed to mark key as incomplete after storage failure'
     );
   }
->>>>>>> main
 }
 
 /**
  * Express middleware enforcing idempotency on funding submissions.
  *
-<<<<<<< test/idempotency-36-mismatch-replay
- * Behaviour:
- *  1. Missing `Idempotency-Key` header → 400 (no DB access)
- *  2. Malformed `Idempotency-Key` → 400 (no DB access)
- *  3. Inside a transaction:
- *     a. If an existing row is past its retention TTL, delete it so a
- *        fresh request is allowed (defensive backstop; the background
- *        purge job is authoritative).
- *     b. If an existing row is a placeholder (response_status null) AND
- *        it has been unfilled for more than
- *        ORPHAN_IN_FLIGHT_TIMEOUT_MS, delete it (orphan recovery).
- *     c. If a non-orphan placeholder exists for the same fingerprint,
- *        return 409 ("currently being processed") to prevent double
- *        funding. Caller may safely retry after completion or after the
- *        orphan timeout.
- *     d. If a completed response exists for the same fingerprint, replay
- *        it.
- *     e. If a row exists for a DIFFERENT fingerprint, return 409.
- *     f. Otherwise insert a placeholder, override res.json to capture
- *        the response for future replays, and call next().
- *  4. On response capture, UPDATE the row with the final status & body
- *     using the global `db` handle (NOT `trx` — the surrounding tx has
- *     already committed by the time the handler runs).
-=======
  * Replay Contract:
  *   1. Completed key (response_status IS NOT NULL and > 0):
  *      Returns cached response with original status code.
@@ -245,7 +176,6 @@ async function persistResponse(trx, key, status, body) {
  *      Re-executes the handler safely; original handler logic will overwrite.
  *   3. Failed-storage key (response_status = -1):
  *      Re-executes the handler safely to recover from storage failure.
->>>>>>> main
  *
  * @param {object} req - Express request
  * @param {object} res - Express response
@@ -337,16 +267,6 @@ function idempotencyMiddleware(req, res, next) {
         );
       }
 
-<<<<<<< test/idempotency-36-mismatch-replay
-      // Replay — return the original cached response
-      const cached = existing.response_body;
-      const status = existing.response_status || 201;
-      try {
-        const parsed = typeof cached === 'string' ? JSON.parse(cached) : cached;
-        return res.status(status).json(parsed);
-      } catch {
-        return res.status(status).json(cached);
-=======
       // Check if response is actually stored (completed state)
       // response_status === -1 means storage failed, treat as incomplete
       if (existing.response_status && existing.response_status > 0) {
@@ -359,7 +279,6 @@ function idempotencyMiddleware(req, res, next) {
         } catch {
           return res.status(status).json(cached);
         }
->>>>>>> main
       }
 
       // Response not stored (in-progress or failed-storage state)
@@ -372,12 +291,8 @@ function idempotencyMiddleware(req, res, next) {
       return;
     }
 
-<<<<<<< test/idempotency-36-mismatch-replay
-    // New key — insert placeholder
-=======
     // New key — insert placeholder on 'In Progress' state
     // response_status = null indicates request is in progress
->>>>>>> main
     await trx('idempotency_keys').insert({
       idempotency_key: key,
       request_fingerprint: bodyFingerprint,
@@ -393,30 +308,12 @@ function idempotencyMiddleware(req, res, next) {
     // Calling `trx(...)` after commit throws "Transaction committed".
     const originalJson = res.json.bind(res);
     res.json = function (body) {
-<<<<<<< test/idempotency-36-mismatch-replay
-      // Fire-and-forget storage of the response payload for future replays.
-      // Use a JS-computed ISO 8601 string for `updated_at` (rather than
-      // `db.fn.now()`) so the value is consistently parseable across SQLite
-      // (which may return non-ISO datetimes) and PostgreSQL.
-      const updatedAt = new Date().toISOString();
-      db('idempotency_keys')
-        .where({ idempotency_key: key })
-        .update({
-          response_status: res.statusCode,
-          response_body: JSON.stringify(body),
-          updated_at: updatedAt,
-        })
-        .catch(() => {
-          // Best-effort — don't fail the request if storage fails
-        });
-=======
       // Persist response synchronously - wait for completion to ensure reliability
       persistResponse(trx, key, res.statusCode, body).catch((err) => {
         // This catch is for synchronous context errors (shouldn't happen)
         // Background retries are handled inside persistResponse
         logger.error({ key, error: err.message }, 'idempotency: unexpected persistence error');
       });
->>>>>>> main
 
       return originalJson(body);
     };
@@ -431,11 +328,7 @@ function idempotencyMiddleware(req, res, next) {
       });
     }
     // If headers already sent, the error happened post-response — log only
-<<<<<<< test/idempotency-36-mismatch-replay
-    console.error('[idempotency] Post-response storage error:', err.message);
-=======
     logger.error('[idempotency] Post-response storage error: %s', err.message);
->>>>>>> main
   });
 }
 
