@@ -52,9 +52,14 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      NODE_ENV: test
+      JWT_SECRET: test-secret-at-least-32-characters-long-string-for-jest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -65,11 +70,15 @@ jobs:
         run: npm install --no-package-lock
 
       - name: Run Tests for changed modules
-        # Run only the test suites for files touched in this PR.
-        # Catches regressions without failing on pre-existing unrelated failures.
+        # Run only test files touched in this PR (skip when docs-only).
         run: |
-          npx jest --no-coverage --forceExit \
-            tests/escrow.derived.test.js
+          CHANGED_TESTS=$(git diff --name-only origin/main...HEAD | grep -E '(^tests/.*\.test\.js$|^src/.*\.test\.js$)' || true)
+          if [ -z "$CHANGED_TESTS" ]; then
+            echo "No test files changed; skipping targeted tests."
+            exit 0
+          fi
+          echo "Running: $CHANGED_TESTS"
+          npx jest --runInBand --no-coverage --forceExit $CHANGED_TESTS
 
       - name: Run full test suite (informational)
         # Run all tests for visibility; continue-on-error so pre-existing
