@@ -14,22 +14,35 @@ let mockCurrentTable = null;
 
 jest.mock('../../src/db/knex', () => {
   const auditLogEvents = [];
+  const investorLocks = [];
   let queryWheres = {};
   let mockCurrentTable;
   let _lastInserted = null;
   let _lastUpdateFields = null;
+  let _lastInsertInput = null;
+  let _limit = null;
+  let _offset = 0;
+
+  const filterInvestorLocks = () => investorLocks.filter((row) => {
+    return Object.entries(queryWheres).every(([key, value]) => row[key] === value);
+  });
 
   const m = jest.fn((table) => {
     mockCurrentTable = table;
     queryWheres = {};
     _lastInserted = null;
     _lastUpdateFields = null;
+    _lastInsertInput = null;
+    _limit = null;
+    _offset = 0;
     return m;
   });
 
   m.where = jest.fn((field, value) => {
     if (typeof field === "string") {
       queryWheres[field] = value;
+    } else if (field && typeof field === "object") {
+      queryWheres = { ...queryWheres, ...field };
     }
     return m;
   });
@@ -43,6 +56,7 @@ jest.mock('../../src/db/knex', () => {
   m.select = jest.fn().mockReturnThis();
   m.insert = jest.fn((data) => {
     const rows = Array.isArray(data) ? data : [data];
+    _lastInsertInput = rows;
     const inserted = rows.map((r) => ({
       id: Math.random().toString(),
       created_at: new Date().toISOString(),
@@ -55,6 +69,29 @@ jest.mock('../../src/db/knex', () => {
     }
     return m;
   });
+  m.onConflict = jest.fn().mockReturnThis();
+  m.merge = jest.fn((fields) => {
+    if (mockCurrentTable === "investor_locks") {
+      for (const row of _lastInsertInput || []) {
+        const existing = investorLocks.find((candidate) => (
+          candidate.tenant_id === row.tenant_id &&
+          candidate.invoice_id === row.invoice_id &&
+          candidate.funder_address === row.funder_address
+        ));
+        if (existing) {
+          Object.assign(existing, row, fields, { updated_at: new Date().toISOString() });
+        } else {
+          investorLocks.push({
+            id: Math.random().toString(),
+            created_at: new Date().toISOString(),
+            ...row,
+          });
+        }
+      }
+      return Promise.resolve(1);
+    }
+    return Promise.resolve(1);
+  });
   m.update = jest.fn((fields) => {
     _lastUpdateFields = fields;
     const updatedRows = [{ id: 'updated-id', ...fields, updated_at: new Date().toISOString() }];
@@ -65,23 +102,68 @@ jest.mock('../../src/db/knex', () => {
     auditLogEvents.length = 0;
     return Promise.resolve(1);
   });
-  m.first = jest.fn().mockResolvedValue({ id: 'test', kyc_status: 'approved' });
+  m.first = jest.fn(() => {
+    if (mockCurrentTable === "investor_locks") {
+      return Promise.resolve(filterInvestorLocks()[0]);
+    }
+    return Promise.resolve({ id: 'test', kyc_status: 'approved' });
+  });
   m.returning = jest.fn(() => {
     return Promise.resolve(_lastInserted || []);
   });
   m.delete = jest.fn(() => {
+    if (mockCurrentTable === "investor_locks") {
+      const retained = investorLocks.filter((row) => !Object.entries(queryWheres).every(([key, value]) => row[key] === value));
+      investorLocks.length = 0;
+      investorLocks.push(...retained);
+      return Promise.resolve(1);
+    }
     auditLogEvents.length = 0;
     return Promise.resolve(1);
   });
-  m.andWhere = jest.fn().mockReturnThis();
+  m.andWhere = jest.fn((field, value) => {
+    if (typeof field === "string") {
+      queryWheres[field] = value;
+    } else if (field && typeof field === "object") {
+      queryWheres = { ...queryWheres, ...field };
+    }
+    return m;
+  });
   m.orWhere = jest.fn().mockReturnThis();
-  m.count = jest.fn().mockResolvedValue([{ count: 25 }]);
+  m.count = jest.fn(() => {
+    if (mockCurrentTable === "investor_locks") {
+      return Promise.resolve([{ count: filterInvestorLocks().length }]);
+    }
+    return Promise.resolve([{ count: 25 }]);
+  });
   m.raw = jest.fn();
+  m.clone = jest.fn().mockReturnThis();
+  m.clearSelect = jest.fn().mockReturnThis();
+  m.clearOrder = jest.fn().mockReturnThis();
+  m.fn = { now: jest.fn(() => new Date().toISOString()) };
+  m.migrate = { latest: jest.fn().mockResolvedValue([0, []]) };
+  m.destroy = jest.fn().mockResolvedValue(undefined);
   m.then = jest.fn((onFulfilled) => {
     if (m._resolveValue) {
       const rv = m._resolveValue;
       m._resolveValue = null;
       return rv.then(onFulfilled);
+    }
+    if (mockCurrentTable === "investor_locks") {
+      let results = filterInvestorLocks().sort((a, b) => {
+        const createdCompare = String(a.created_at).localeCompare(String(b.created_at));
+        if (createdCompare !== 0) {
+          return createdCompare;
+        }
+        return String(a.invoice_id).localeCompare(String(b.invoice_id));
+      });
+      if (_offset) {
+        results = results.slice(_offset);
+      }
+      if (_limit !== null) {
+        results = results.slice(0, _limit);
+      }
+      return Promise.resolve(results).then(onFulfilled);
     }
     if (mockCurrentTable === "audit_log_events") {
       return Promise.resolve(mockInMemoryDb).then(onFulfilled);
@@ -89,7 +171,11 @@ jest.mock('../../src/db/knex', () => {
     return Promise.resolve([]).then(onFulfilled);
   });
 
-  m.offset = jest.fn(() => {
+  m.offset = jest.fn((value = 0) => {
+    if (mockCurrentTable === "investor_locks") {
+      _offset = value;
+      return m;
+    }
     let results = [...auditLogEvents];
 
     if (queryWheres.target_id) {
@@ -110,6 +196,10 @@ jest.mock('../../src/db/knex', () => {
 
     results.reverse();
     return Promise.resolve(results);
+  });
+  m.limit = jest.fn((value) => {
+    _limit = value;
+    return m;
   });
   return m;
 }, { virtual: true });

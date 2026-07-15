@@ -1379,7 +1379,7 @@ The backend supports durable idempotency keys for funding operations to safely r
 
 ## Investor Commitment
 
-`src/services/investorCommitment.js` persists funding intents from the `POST /api/invest/fund-invoice` flow and exposes an in-memory lock store for the `GET /api/investor/locks` routes.
+`src/services/investorCommitment.js` persists funding intents from the `POST /api/invest/fund-invoice` flow and exposes tenant-scoped, Knex-backed investor lock storage for the `GET /api/investor/locks` routes.
 
 ### Amount validation
 
@@ -1419,15 +1419,15 @@ Any violation throws a `CommitmentValidationError` with a typed `.code`:
 
 `persistCommitment` accepts an optional `idempotencyKey`. When a row with that key already exists the function returns it immediately — no second insert is made. `updateCommitment` refuses to modify `amount_stroops` to prevent silent corruption of commitment records.
 
-### In-memory lock store
+### Investor lock store
 
-The service maintains a `Map`-backed lock cache (claimNotBefore, investorEffectiveYieldBps) mirrored from the DB. All cached entries carry `stale: true` because they are not read live from the chain.
+The service stores lock records (`claimNotBefore`, `investorEffectiveYieldBps`) in the `investor_locks` table. Rows are unique by `tenant_id`, `invoice_id`, and `funder_address`, so the same invoice/funder pair can exist independently for different tenants. Fresh database reads return `stale: false`; the stale flag is derived from each row's refresh timestamp instead of being hardcoded for every response.
 
 | Function | Purpose |
 |----------|---------|
 | `seedInvestorLocks()` | Populate representative data (used in tests) |
-| `clearInvestorLocks()` | Wipe the cache (used between test suites) |
-| `setInvestorLock(params)` | Upsert a lock record |
+| `clearInvestorLocks()` | Wipe durable lock rows, optionally by tenant (used between test suites) |
+| `setInvestorLock(params)` | Upsert a tenant-scoped lock record |
 | `getInvestorLock(invoiceId, funderAddress)` | Look up a single lock |
 | `getInvestorLocksByAddress(funderAddress, opts)` | Filter by funder address |
 | `getAllInvestorLocks(opts)` | List all locks |

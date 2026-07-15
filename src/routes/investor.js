@@ -38,7 +38,7 @@ const cacheLock = cacheResponse({
  *     description: |
  *       Retrieve a paginated list of investor lock records
  *       (claimNotBefore, investorEffectiveYieldBps) per funder.
- *       Returns `stale=true` in `meta` for DB-mirrored data.
+ *       Returns `meta.stale=true` only when any row lacks a fresh DB refresh timestamp.
  *
  *       **Pagination**
  *       | Param | Default | Notes |
@@ -180,9 +180,10 @@ router.get('/locks', authenticateToken, extractTenant, cacheLocks, async (req, r
       effectiveFunderAddress = boundFunderAddress;
     }
 
+    const tenantId = req.tenantId;
     const result = effectiveFunderAddress
-      ? investorCommitmentService.getInvestorLocksByAddress(effectiveFunderAddress, { invoiceId, limit, page })
-      : investorCommitmentService.getAllInvestorLocks({ invoiceId, limit, page });
+      ? await investorCommitmentService.getInvestorLocksByAddress(effectiveFunderAddress, { tenantId, invoiceId, limit, page })
+      : await investorCommitmentService.getAllInvestorLocks({ tenantId, invoiceId, limit, page });
 
     const anyStale = result.data.length > 0 && result.data.some((lock) => lock.stale === true);
 
@@ -279,7 +280,9 @@ router.get('/locks/:invoiceId', authenticateToken, extractTenant, cacheLock, asy
       }
     }
 
-    const lock = investorCommitmentService.getInvestorLock(invoiceId, requestedFunderAddress);
+    const lock = await investorCommitmentService.getInvestorLock(invoiceId, requestedFunderAddress, {
+      tenantId: req.tenantId,
+    });
 
     if (!lock) {
       return res.status(404).json({ error: 'Lock not found' });
