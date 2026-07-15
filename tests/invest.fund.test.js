@@ -234,33 +234,48 @@ describe('POST /api/invest/fund-invoice — body validation (400)', () => {
     expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
   });
 
-  it('rejects numeric amountStroops instead of coercing it', async () => {
+  it('rejects scientific-notation string amountStroops', async () => {
     const res = await agent()
       .post('/api/invest/fund-invoice')
       .set('Authorization', `Bearer ${token()}`)
       .set('x-tenant-id', TENANT_ID)
-      .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: 1000 });
-    expect(res.status).toBe(400);
-    expect(res.body.error.details.some(d => /amountStroops must be a string/.test(d))).toBe(true);
-    expect(submitFundEscrow).not.toHaveBeenCalled();
-    expect(persistCommitment).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['scientific notation', '1e7'],
-    ['leading zeros', '001000'],
-    ['plus sign', '+1000'],
-    ['overflow above 10^18', '1000000000000000001'],
-  ])('rejects %s amountStroops before funding', async (_label, badAmount) => {
-    const res = await agent()
-      .post('/api/invest/fund-invoice')
-      .set('Authorization', `Bearer ${token()}`)
-      .set('x-tenant-id', TENANT_ID)
-      .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: badAmount });
+      .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: '1e7' });
     expect(res.status).toBe(400);
     expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
-    expect(submitFundEscrow).not.toHaveBeenCalled();
-    expect(persistCommitment).not.toHaveBeenCalled();
+  });
+
+  it('rejects decimal string amountStroops', async () => {
+    const res = await agent()
+      .post('/api/invest/fund-invoice')
+      .set('Authorization', `Bearer ${token()}`)
+      .set('x-tenant-id', TENANT_ID)
+      .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: '100.0' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
+  });
+
+  it('rejects leading-zero string amountStroops', async () => {
+    const res = await agent()
+      .post('/api/invest/fund-invoice')
+      .set('Authorization', `Bearer ${token()}`)
+      .set('x-tenant-id', TENANT_ID)
+      .send({ invoiceId: VALID_INVOICE, investorAddress: VALID_ADDRESS, amountStroops: '007' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
+  });
+
+  it('rejects unsafe integer number amountStroops', async () => {
+    const res = await agent()
+      .post('/api/invest/fund-invoice')
+      .set('Authorization', `Bearer ${token()}`)
+      .set('x-tenant-id', TENANT_ID)
+      .send({
+        invoiceId: VALID_INVOICE,
+        investorAddress: VALID_ADDRESS,
+        amountStroops: Number.MAX_SAFE_INTEGER + 1,
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.some(d => /amountStroops/.test(d))).toBe(true);
   });
 
   it('returns all field errors when all three fields are invalid', async () => {

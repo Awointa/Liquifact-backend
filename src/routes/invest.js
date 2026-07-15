@@ -27,9 +27,9 @@ const { legalHoldGate } = require('../middleware/legalHoldGate');
 const { resolveEscrowAddress, EscrowNotFoundError } = require('../config/escrowMap');
 const { submitFundEscrow, EscrowSubmitError } = require('../services/escrowSubmit');
 const {
-  CommitmentValidationError,
   persistCommitment,
-  validateAmountStroops,
+  normalizeAmountStroopsInput,
+  CommitmentValidationError,
 } = require('../services/investorCommitment');
 const { listOpportunities } = require('../services/investService');
 const idempotencyMiddleware = require('../middleware/idempotency');
@@ -66,7 +66,7 @@ function validateFundInvoiceBody(body) {
   }
 
   try {
-    validateAmountStroops(amountStroops);
+    normalizeAmountStroopsInput(amountStroops);
   } catch (err) {
     if (err instanceof CommitmentValidationError) {
       errors.push(err.message);
@@ -164,7 +164,8 @@ router.post(
       });
     }
 
-    const { invoiceId, investorAddress, amountStroops } = req.body;
+    const { invoiceId, investorAddress } = req.body;
+    const amountStroops = normalizeAmountStroopsInput(req.body.amountStroops);
 
     // 2. Intercept execution via legalHoldGate before executing any Soroban network mutations
     // We invoke the check inline manually here to ensure it aligns perfectly within the validated payload lifecycle

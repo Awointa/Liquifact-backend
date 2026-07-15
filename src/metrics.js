@@ -994,51 +994,53 @@ const sorobanRpcRetryCausesTotal = new client.Counter({
   registers: [registry],
 });
 
-/**
- * Get the shared Prometheus registry instance.
- * @returns {import('prom-client').Registry} The registry
- */
+const footprintCacheHitsTotal = new client.Counter({
+  name: 'footprint_cache_hits_total',
+  help: 'Total footprint cache hits',
+  registers: [registry],
+});
+
+const footprintCacheMissesTotal = new client.Counter({
+  name: 'footprint_cache_misses_total',
+  help: 'Total footprint cache misses',
+  registers: [registry],
+});
+
+const footprintCacheEvictionsTotal = new client.Counter({
+  name: 'footprint_cache_evictions_total',
+  help: 'Total footprint cache evictions',
+  registers: [registry],
+});
+
 function getRegistry() {
   return registry;
 }
 
 module.exports = {
-  bodySizeLimitRejectionsTotal,
-  cacheStoreErrorsTotal,
-  contractWasmVersionMismatchAlertsTotal,
-  escrowIndexerCycleFailuresTotal,
+  registry,
+  getRegistry,
+  metricsAuth,
+  metricsHandler,
+  registerJobQueue,
+  registerWorker,
+  refreshMetrics,
+  resetMetricsForTests,
+  escrowIndexerLastCursorAdvanceTimestampSeconds,
   escrowIndexerEventsProcessedTotal,
   escrowIndexerEventsSkippedTotal,
   escrowIndexerLastCursorAdvanceTimestampSeconds,
   escrowReconciliationDriftAlertsTotal,
-  escrowReconciliationDriftMagnitudeGauge,
-  escrowReconciliationMismatchedInvoicesGauge,
-  escrowReconciliationMismatches,
-  footprintCacheEvictionsTotal,
-  footprintCacheHitsTotal,
-  footprintCacheMissesTotal,
-  getRegistry,
-  idempotencyStorageFailureTotal,
-  maturityReminderDeadLetterTotal,
-  maturityReminderDeliveryAttemptsTotal,
-  maturityReminderDeliverySuccessTotal,
-  metricsAuth,
-  metricsHandler,
-  normalizeJobType,
-  normalizeReminderReason,
-  normalizeSorobanRetryCause,
-  normalizeSorobanRpcMethod,
-  normalizeSorobanRpcOutcome,
-  readinessGauge,
-  redisCacheFailOpenTotal,
-  refreshMetrics,
-  registerJobQueue,
-  registerWorker,
-  registry,
-  resetMetricsForTests,
-  sorobanCircuitBreakerStateTransitionsTotal,
   sorobanRpcCallDurationSeconds,
   sorobanRpcRetryCausesTotal,
+  footprintCacheHitsTotal,
+  footprintCacheMissesTotal,
+  footprintCacheEvictionsTotal,
+  webhookReplayTotal,
+  bodySizeLimitRejectionsTotal,
+  normalizeJobType,
+  normalizeSorobanRpcMethod,
+  normalizeSorobanRpcOutcome,
+  normalizeSorobanRetryCause,
   startMetricsRefresh,
   stopMetricsRefresh,
   webhookReplayTotal,

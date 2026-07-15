@@ -45,6 +45,44 @@ class CommitmentValidationError extends Error {
 }
 
 /**
+ * Normalize and validate amountStroops from route input (number or string).
+ * Returns the canonical decimal string used by persistence and Soroban calls.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ * @throws {CommitmentValidationError}
+ */
+function normalizeAmountStroopsInput(value) {
+  let candidate;
+
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new CommitmentValidationError(
+        'amountStroops must be a positive integer representing the fund amount in stroops.',
+        'INVALID_AMOUNT_RANGE'
+      );
+    }
+    if (value > Number.MAX_SAFE_INTEGER) {
+      throw new CommitmentValidationError(
+        'amountStroops exceeds JavaScript safe integer range; pass a decimal string instead.',
+        'INVALID_AMOUNT_TYPE'
+      );
+    }
+    candidate = String(value);
+  } else if (typeof value === 'string') {
+    candidate = value;
+  } else {
+    throw new CommitmentValidationError(
+      `amountStroops must be a string or safe integer, got ${value === null ? 'null' : typeof value}`,
+      'INVALID_AMOUNT_TYPE'
+    );
+  }
+
+  validateAmountStroops(candidate);
+  return candidate;
+}
+
+/**
  * Validate that a value is a safe positive integer string suitable for
  * on-chain stroop math.
  *
@@ -499,6 +537,9 @@ module.exports = {
   validateAmountStroops,
   findCommitments,
   validateAddress,
+  validateAmountStroops,
+  normalizeAmountStroopsInput,
+  CommitmentValidationError,
   setInvestorLock,
   getInvestorLock,
   getAllInvestorLocks,
