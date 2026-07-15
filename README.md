@@ -77,10 +77,10 @@ Clients can bypass the cache by sending a `Cache-Control: no-cache` request head
 | Endpoint                                | Cache key format                                           | TTL      |
 |-----------------------------------------|------------------------------------------------------------|----------|
 | `GET /api/marketplace`                  | `marketplace:<tenantId>:<originalUrl>`                     | 15s      |
-| `GET /api/investor/locks`               | `investor:locks:<tenantId>:<principalScope>:<originalUrl>` | 15s      |
-| `GET /api/investor/locks/:invoiceId`    | `investor:lock:<tenantId>:<principalScope>:<invoiceId>:<funderAddress>` | 15s      |
+| `GET /api/investor/locks`               | `investor:locks:<tenantId>:sha256(<principalScope>):<path>?<normalizedQuery>` | 15s      |
+| `GET /api/investor/locks/:invoiceId`    | `investor:lock:<tenantId>:sha256(<principalScope>):<invoiceId>:sha256(<funderAddress>)` | 15s      |
 
-For investor-lock responses, `<principalScope>` is `admin:<role>` for tenant-wide admin or owner reads, or `funder:<boundAddress>` for non-admin investor reads. This prevents one authenticated principal from receiving another principal's cached lock response when the URL is otherwise identical.
+For investor-lock responses, `<principalScope>` is `admin:<role>` for tenant-wide admin or owner reads, or `funder:<boundAddress>` for non-admin investor reads. The cache key hashes principal scope and `funderAddress` query values, and normalizes query parameter ordering. This prevents one authenticated principal from receiving another principal's cached lock response when the URL is otherwise identical without storing raw funder addresses in cache keys.
 
 ### Tenant isolation
 
