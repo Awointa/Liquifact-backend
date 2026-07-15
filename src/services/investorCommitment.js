@@ -350,8 +350,11 @@ function seedInvestorLocks() {
 }
 
 module.exports = {
+  CommitmentValidationError,
+  MAX_STROOP_AMOUNT,
   persistCommitment,
   updateCommitment,
+  validateAmountStroops,
   findCommitments,
   validateAddress,
   setInvestorLock,

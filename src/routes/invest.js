@@ -26,7 +26,11 @@ const { requireKycForFunding } = require('../middleware/kycGating');
 const { legalHoldGate } = require('../middleware/legalHoldGate');
 const { resolveEscrowAddress, EscrowNotFoundError } = require('../config/escrowMap');
 const { submitFundEscrow, EscrowSubmitError } = require('../services/escrowSubmit');
-const { persistCommitment } = require('../services/investorCommitment');
+const {
+  CommitmentValidationError,
+  persistCommitment,
+  validateAmountStroops,
+} = require('../services/investorCommitment');
 const { listOpportunities } = require('../services/investService');
 const idempotencyMiddleware = require('../middleware/idempotency');
 const { isValidStellarAddress } = require('../utils/validators');
@@ -61,10 +65,14 @@ function validateFundInvoiceBody(body) {
     errors.push('investorAddress must be a valid Stellar public key (G... or C...).');
   }
 
-  // amountStroops: must be a positive integer (as number or numeric string)
-  const parsed = Number(amountStroops);
-  if (!amountStroops || !Number.isInteger(parsed) || parsed <= 0) {
-    errors.push('amountStroops must be a positive integer representing the fund amount in stroops.');
+  try {
+    validateAmountStroops(amountStroops);
+  } catch (err) {
+    if (err instanceof CommitmentValidationError) {
+      errors.push(err.message);
+    } else {
+      throw err;
+    }
   }
 
   return errors;
@@ -94,6 +102,50 @@ router.get(
 
 // ─── POST /api/invest/fund-invoice ───────────────────────────────────────────
 
+/**
+ * @swagger
+ * /api/invest/fund-invoice:
+ *   post:
+ *     summary: Fund an invoice through the configured escrow contract
+ *     tags: [Invest]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [invoiceId, investorAddress, amountStroops]
+ *             additionalProperties: true
+ *             properties:
+ *               invoiceId:
+ *                 type: string
+ *                 minLength: 3
+ *                 maxLength: 64
+ *                 pattern: '^[A-Za-z0-9_-]+$'
+ *               investorAddress:
+ *                 type: string
+ *                 description: Stellar account or contract address.
+ *               amountStroops:
+ *                 type: string
+ *                 pattern: '^[1-9][0-9]*$'
+ *                 maxLength: 19
+ *                 description: Digits-only stroop amount, no signs/decimals/scientific notation/leading zeros, and <= 10^18.
+ *     responses:
+ *       200:
+ *         description: Funding request accepted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/FundInvoiceResponse'
+ *       400:
+ *         $ref: '#/components/responses/Problem400'
+ *       401:
+ *         $ref: '#/components/responses/Problem401'
+ *       403:
+ *         $ref: '#/components/responses/Problem403'
+ */
 router.post(
   '/fund-invoice',
   requireKycForFunding,
@@ -160,7 +212,7 @@ router.post(
       submitResult = await submitFundEscrow({
         escrowAddress,
         investorAddress,
-        amountStroops: String(amountStroops),
+        amountStroops,
         invoiceId,
       });
     } catch (err) {
@@ -182,7 +234,7 @@ router.post(
       invoiceId,
       investorAddress,
       escrowAddress,
-      amountStroops: String(amountStroops),
+      amountStroops,
       status: submitResult.status,
       unsignedXdr: submitResult.unsignedXdr,
       txHash: submitResult.txHash,

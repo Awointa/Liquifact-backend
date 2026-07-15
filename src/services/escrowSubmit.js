@@ -39,6 +39,7 @@ const { Server } = require('@stellar/stellar-sdk/rpc');
 
 const logger = require('../logger');
 const { escrowPreflightRejectedTotal } = require('../metrics');
+const { validateAmountStroops } = require('./investorCommitment');
 
 const SIGNING_MODE = {
   DELEGATED: 'delegated',
@@ -63,7 +64,7 @@ const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
  * @param {Object} params
  * @param {string} params.escrowAddress   — Stellar contract address of the escrow
  * @param {string} params.investorAddress — investor's Stellar public key
- * @param {string|number} params.amountStroops — amount in stroops (integer string)
+ * @param {string} params.amountStroops — amount in stroops (integer string)
  * @param {string} params.invoiceId       — used for idempotency / memo
  * @returns {Promise<EscrowSubmitResult>}
  */
@@ -100,11 +101,13 @@ function buildMemo(invoiceId) {
  * @param {Object} params
  * @param {string} params.escrowAddress   — Stellar contract address of the escrow
  * @param {string} params.investorAddress — investor's Stellar public key
- * @param {string|number} params.amountStroops — amount in stroops (integer string)
+ * @param {string} params.amountStroops — amount in stroops (integer string)
  * @param {string} params.invoiceId       — used for idempotency / memo
  * @returns {Promise<EscrowSubmitResult>}
  */
 async function submitFundEscrow({ escrowAddress, investorAddress, amountStroops, invoiceId }) {
+  validateAmountStroops(amountStroops);
+
   const mode = (process.env.ESCROW_SIGNING_MODE || SIGNING_MODE.STUBBED).toLowerCase();
 
   if (mode === SIGNING_MODE.STUBBED) {

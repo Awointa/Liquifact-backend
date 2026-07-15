@@ -9,7 +9,7 @@
  * - Standardized log levels
  * - Request correlation via request IDs
  * - Automatic enrichment from the AsyncLocalStorage request context
- *   (requestId, correlationId, tenantId, userId) — no manual threading needed.
+ *   (requestId, correlationId, tenantId, userId) with no manual threading.
  *
  * @module logger
  */
@@ -51,57 +51,37 @@ const _base = pino(
 );
 
 /**
- * Build a merged bindings object from the ambient context plus any
- * caller-supplied overrides. Explicit values always win.
- *
- * @param {Record<string, unknown>} [overrides] - Per-call bindings.
- * @returns {Record<string, unknown>} Merged bindings.
- */
-function _mergeContext(overrides) {
-  const ctx = getContext();
-  // Ambient context first so caller overrides take precedence.
-  return Object.keys(ctx).length === 0 && !overrides
-    ? {}
-    : { ...ctx, ...overrides };
-}
-
-/**
- * Thin proxy that enriches every log call with the ambient request context.
- * Explicit per-call fields passed to `logger.info({ … }, msg)` override the
- * ambient values for that call only.
+ * Logger instance with stable own level methods. Keeping the wrappers as
+ * assignable properties lets Jest spy on `logger.warn` without recursing back
+ * through the wrapped Pino method.
  *
  * @type {import('pino').Logger}
  */
-const logger = new Proxy(_base, {
-  get(target, prop) {
-    const LEVEL_METHODS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal']);
-    if (typeof prop === 'string' && LEVEL_METHODS.has(prop)) {
-      return function enrichedLog(objOrMsg, ...rest) {
-        const ctx = getContext();
-        const hasCtx = Object.keys(ctx).length > 0;
+const logger = _base;
+const LEVEL_METHODS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
 
-        if (!hasCtx) {
-          // No ambient context — call through unchanged (background jobs).
-          return target[prop](objOrMsg, ...rest);
-        }
+for (const level of LEVEL_METHODS) {
+  const write = _base[level].bind(_base);
 
-        if (typeof objOrMsg === 'string') {
-          // Signature: logger.info('message')
-          return target[prop]({ ...ctx }, objOrMsg, ...rest);
-        }
+  logger[level] = function enrichedLog(objOrMsg, ...rest) {
+    const ctx = getContext();
+    const hasCtx = Object.keys(ctx).length > 0;
 
-        if (objOrMsg && typeof objOrMsg === 'object') {
-          // Signature: logger.info({ key: val }, 'message')
-          // Explicit fields override ambient.
-          return target[prop]({ ...ctx, ...objOrMsg }, ...rest);
-        }
-
-        return target[prop](objOrMsg, ...rest);
-      };
+    if (!hasCtx) {
+      return write(objOrMsg, ...rest);
     }
-    return target[prop];
-  },
-});
+
+    if (typeof objOrMsg === 'string') {
+      return write({ ...ctx }, objOrMsg, ...rest);
+    }
+
+    if (objOrMsg && typeof objOrMsg === 'object') {
+      return write({ ...ctx, ...objOrMsg }, ...rest);
+    }
+
+    return write(objOrMsg, ...rest);
+  };
+}
 
 /**
  * Create a per-request child logger bound only with safe correlation fields.

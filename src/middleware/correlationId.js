@@ -1,6 +1,7 @@
 'use strict';
 
 const { createRequestLogger } = require('../logger');
+const { set: setContext } = require('../requestContext');
 const {
   CORRELATION_HEADER,
   REQUEST_IDENTIFIER_PATTERN,
