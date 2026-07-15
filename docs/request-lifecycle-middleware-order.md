@@ -1,83 +1,128 @@
 # Request lifecycle and middleware order
 
-This document describes how incoming HTTP requests flow through the LiquiFact
-Express application and the intended order of global middleware and feature-router
-mounts in [`src/app.js`](../src/app.js).
+This document describes the request path assembled by
+[`src/app.js`](../src/app.js) and the reusable route stacks in
+[`src/middleware/stacks.js`](../src/middleware/stacks.js). Treat it as the
+source map for debugging ordering-sensitive behavior such as body parsing,
+authentication, tenant extraction, KYC gates, legal-hold checks, idempotency,
+metrics, and error normalization.
 
-## Global middleware (every request)
+## Application wrapper
 
-Applied in this order before any route handler runs:
+The exported app is created by `createStandardizedApp()`. That wrapper installs
+one outer middleware before the raw application returned by `createApp()`:
 
-| Step | Middleware | Purpose |
-|------|------------|---------|
-| 1 | CORS (`createCorsOptions`) | Environment-driven origin allowlist |
-| 1.a | Raw body parser (`/api/kyc/webhook` only) | Provider webhook signature verification |
-| 2 | JSON body limit | Global JSON payload guardrail (100 KB) |
-| 3 | URL-encoded body limit | Form payloads (50 KB) |
-| 4 | Security headers (`createSecurityMiddleware`) | Helmet-style hardening |
-| 5 | Audit middleware | Structured request audit trail |
-| 6 | Request ID | Resolves the canonical request identifier from `X-Request-Id`, `request-id`, or `X-Correlation-Id`, then attaches it to both `req.id` and `req.correlationId` for logging |
-| 7 | Correlation ID | Echoes the canonical identifier in `X-Correlation-Id` and refreshes the request-scoped logger bindings |
+| Order | Layer | Effect |
+|-------|-------|--------|
+| 0 | response-envelope wrapper | Replaces `res.json()` so successful and error JSON payloads are normalized through `toStandardEnvelope()` before they leave the process. |
+| 1 | raw LiquiFact app | Delegates to the `createApp()` instance described below. |
 
-## Request identifier header contract
+The wrapper does not reorder the routes or middleware inside `createApp()`.
 
-The identifier pipeline accepts a client-supplied request or correlation header only when it is 8 to 64 characters long and contains only the safe characters `[A-Za-z0-9_-]`. Values with dots, control characters, newlines, whitespace, or other disallowed bytes are rejected. `X-Request-Id` and `request-id` take precedence over `X-Correlation-Id` when multiple valid headers are present. The sanitized value is attached to both `req.id` and `req.correlationId`, propagated into child loggers as `requestId` and `correlationId`, and echoed in `X-Request-Id` and `X-Correlation-Id`. If no inbound identifier is trusted, the server generates a full-strength `req_` identifier from UUID entropy.
+## Global middleware before routes
 
-## Body Size Limits
+Every request entering `createApp()` sees these global layers before inline
+routes or feature routers are evaluated:
 
-The JSON, URL-encoded, and invoice body guards reject requests early when a
-trustworthy `Content-Length` declares a body larger than the configured limit.
-Requests without a valid `Content-Length`, including `Transfer-Encoding:
-chunked`, are not treated as zero-byte bodies. They continue into the Express
-body parser, which enforces the same byte cap without buffering beyond its
-configured limit. Parser-raised 413 responses reuse the guard's stored limit
-context so `bodySizeLimitRejectionsTotal` keeps the correct `json`,
-`urlencoded`, or `invoice` label.
+| Order | Middleware | Source | Purpose |
+|-------|------------|--------|---------|
+| 1 | CORS | `cors(createCorsOptions())` | Applies the environment-driven origin allowlist. Rejected origins are normalized later by `handleCorsError`. |
+| 2 | KYC webhook raw body parser | `express.raw({ type: 'application/json', limit: '100kb' })` on `/api/kyc/webhook` | Preserves the provider webhook body for signature verification before the global JSON parser consumes it. |
+| 3 | JSON body guard and parser | `...jsonBodyLimit()` | Applies the global JSON body cap, defaulting to 100 KB. |
+| 4 | URL-encoded body guard and parser | `...urlencodedBodyLimit()` | Applies the form body cap, defaulting to 50 KB. |
+| 5 | Security headers | `createSecurityMiddleware()` | Applies Helmet headers, using the docs CSP for `/api-docs` and `/docs`, and the stricter default CSP elsewhere. |
+| 6 | Audit middleware | `auditMiddleware` | Wraps successful API mutations (`POST`, `PUT`, `PATCH`, `DELETE` under `/api/`) with fire-and-forget audit logging. It skips non-API requests and read-only methods. |
+| 7 | Request ID | `requestId` | Resolves or generates the canonical request id and writes it to `req.id` and `req.correlationId`. |
+| 8 | Correlation ID | `correlationIdMiddleware` | Echoes the canonical id in `X-Correlation-Id` and refreshes request-scoped logger bindings. |
 
-## Inline routes (defined on `app` directly)
+### Request identifier contract
 
-Health probes (`/health`, `/healthz`, `/ready`, `/readyz`), API info (`/api`),
-invoice list/create, escrow read, and debug error routes are registered on the
-app instance before feature routers mount.
+`requestId` accepts a client-supplied `X-Request-Id`, `request-id`, or
+`X-Correlation-Id` only when the value is 8 to 64 characters long and uses the
+safe character set `[A-Za-z0-9_-]`. `X-Request-Id` and `request-id` take
+precedence over `X-Correlation-Id`. If no inbound value is trusted, the server
+generates a `req_` identifier from UUID entropy.
 
-## Feature router mounts (single mount per router instance)
+### Body-size behavior
 
-Each feature router is imported once and mounted once via
-`mountFeatureRouter` from [`src/utils/routeMountRegistry.js`](../src/utils/routeMountRegistry.js).
-A startup assertion (`assertNoDuplicateRouterMounts`) fails fast if the same
-router instance is mounted twice at the same base path.
+The JSON, URL-encoded, and invoice body guards reject a request early only when
+a trustworthy `Content-Length` exceeds the configured limit. Missing, malformed,
+or chunked lengths continue to the Express parser, which still enforces the same
+byte cap. Parser-raised 413 responses reuse the stored limit context so
+`bodySizeLimitRejectionsTotal` keeps the correct `json`, `urlencoded`, or
+`invoice` label.
 
-Mount order (preserved intentionally):
+`POST /api/invoices` adds a route-local `...invoiceBodyLimit()` after the
+global JSON parser. That route-local guard records the stricter `invoice` limit
+for metrics and protects the invoice creation handler from oversized payloads.
 
-| Order | Base path | Router module | Notes |
-|-------|-----------|---------------|-------|
-| 1 | `/api/sme` | `routes/sme` | SME metrics and uploads |
-| 2 | `/api/invoices` | `routes/invoiceFile` | File upload handlers |
-| 3 | `/api/invoices` | `routes/invoiceStateRoutes` | State machine (second router, different instance) |
-| 4 | `/api/invest` | `routes/invest` | Funding opportunities and fund-invoice |
-| 5 | `/api/investor` | `routes/investor` | **Single mount** — investor lock list/detail |
-| 6 | `/api/kyc` | `routes/kyc` | KYC verification |
-| 7 | `/api/marketplace` | `routes/marketplace` | Investable invoice marketplace |
-| 8 | `/api/retention` | `routes/retention` | Data retention policies |
-| 9 | `/api/admin/audit` | `routes/auditTrail` | Admin audit trail |
-| 10 | `/api/admin/escrow` | `routes/adminEscrow` | Admin escrow tooling |
-| 11 | `/api/admin/reconciliation` | `routes/reconciliation` | Reconciliation runs |
-| 12 | `/v1` | `routes/v1` | Versioned API surface |
+## Inline routes
 
-> **Investor routes:** `/api/investor` is mounted exactly once. The investor
-> router applies `authenticateToken` then `extractTenant` on each handler, so
-> auth and tenant context are enforced before lock list or detail logic runs.
+Inline routes are registered directly on the app before any feature router is
+mounted:
 
-## Post-route middleware
+| Order | Route(s) | Notes |
+|-------|----------|-------|
+| 1 | `GET /health`, `GET /healthz` | Liveness probes with no external dependency checks. |
+| 2 | `GET /ready`, `GET /readyz` | Dependency/readiness probes. |
+| 3 | `GET /api` | API metadata and endpoint summary. |
+| 4 | `GET /api/invoices` | Validates query parameters, then lists invoices. |
+| 5 | `POST /api/invoices` | Applies the invoice body limit, validates the invoice payload, then returns the create placeholder. |
+| 6 | `GET /api/escrow/:invoiceId` | Resolves escrow address mapping, reads escrow state, and adds `X-Escrow-Address`. |
+| 7 | `GET /error`, `GET /debug/error`, `GET /prod-error` | Test/debug routes that deliberately enter the error pipeline. |
 
-| Step | Handler | Purpose |
-|------|---------|---------|
-| Metrics | `GET /metrics` | Prometheus scrape (auth-gated) |
-| 404 | Catch-all | Unknown paths |
-| Error | CORS → payload-too-large → internal | Ordered error normalization |
+## Feature router mounts
 
-## Standardized response envelope
+Feature routers are mounted through `mountFeatureRouter()`, then
+`assertNoDuplicateRouterMounts()` runs before metrics and catch-all handlers.
+The assertion prevents the same router instance from being mounted twice at the
+same base path. Multiple routers may intentionally share a base path when they
+are distinct instances.
 
-Production entry points use `createStandardizedApp()`, which wraps `createApp()`
-and normalizes JSON responses through `toStandardEnvelope`. Route order inside
-`createApp()` is unchanged; only the outer response wrapper is added.
+| Order | Base path | Router module | Important local ordering |
+|-------|-----------|---------------|--------------------------|
+| 1 | `/api/sme` | `routes/sme` | `routes/sme/index.js` mounts SME metrics first, then invoice upload helpers. Individual SME invoice routes apply `extractTenant`; the presigned-url route also applies `idempotencyMiddleware`. |
+| 2 | `/api/invoices` | `routes/invoiceFile` | File upload and presigned URL handlers for invoice files. |
+| 3 | `/api/invoices` | `routes/invoiceStateRoutes` | Invoice state-machine routes. This is a second, distinct router sharing the invoice base path. |
+| 4 | `/api/invest` | `routes/invest` | Starts with `authenticatedTenantStack` (`authenticateToken` -> `extractTenant`). `POST /fund-invoice` then runs `requireKycForFunding`, `idempotencyMiddleware`, body validation, an inline `legalHoldGate()` call, escrow address resolution, Soroban submission, and commitment persistence. |
+| 5 | `/api/investor` | `routes/investor` | Mounted exactly once. Lock list/detail handlers run `authenticateToken` -> `extractTenant` before cache and handler logic. |
+| 6 | `/api/kyc` | `routes/kyc` | KYC webhook and verification routes. The raw body parser for `/api/kyc/webhook` has already run globally before JSON parsing. |
+| 7 | `/api/marketplace` | `routes/marketplace` | Starts with `authenticatedTenantStack`, then `GET /` runs marketplace cache middleware before query validation and service lookup. |
+| 8 | `/api/retention` | `routes/retention` | Uses a local `adminAuth` helper that accepts either API key auth or JWT auth. Sensitive mutation routes add `sensitiveLimiter` after admin auth. |
+| 9 | `/api/admin/audit` | `routes/auditTrail` | Audit trail reads apply `authenticateToken` -> `extractTenant` before route logic; the router also has its own error handler. |
+| 10 | `/api/admin/escrow` | `routes/adminEscrow` | Starts with `adminStack` (`adminAuth` JWT-or-API-key -> `extractTenant`). |
+| 11 | `/api/admin/reconciliation` | `routes/reconciliation` | Starts with `adminStack` before reconciliation route handlers. |
+| 12 | `/v1` | `routes/v1` | Versioned API surface. Some routes apply `extractTenant`; `GET /escrow/:invoiceId` applies `authenticateToken` directly. |
+
+## Reusable auth stacks
+
+[`src/middleware/stacks.js`](../src/middleware/stacks.js) defines the shared
+ordering used by newer protected routers:
+
+| Stack | Order | Used by |
+|-------|-------|---------|
+| `authenticatedTenantStack` | `authenticateToken` -> `extractTenant` | `/api/invest`, `/api/marketplace` |
+| `adminStack` | `adminAuth` (API key if `x-api-key` exists, otherwise JWT) -> `extractTenant` | `/api/admin/escrow`, `/api/admin/reconciliation` |
+
+The order is load-bearing: authentication must run before `extractTenant` so
+tenant context can come from the verified JWT or API key. Routes that do not use
+these stacks should be checked individually before assuming tenant context is
+available.
+
+## Metrics, 404, and error handlers
+
+After inline routes and feature routers, the app registers the final handlers in
+this order:
+
+| Order | Handler | Purpose |
+|-------|---------|---------|
+| 1 | `GET /metrics` with `metricsAuth` | Prometheus scrape endpoint. It is mounted after feature routers, so an earlier matching route would win. |
+| 2 | 404 catch-all | Returns `{ error: 'Not found', path }` for unknown routes. |
+| 3 | `handleCorsError` | Converts the dedicated blocked-origin CORS error into a 403 JSON response. Other errors continue down the chain. |
+| 4 | `payloadTooLargeHandler` | Converts Express body-parser `entity.too.large` errors into 413 JSON and increments body-size metrics. |
+| 5 | `handleInternalError` | Handles bad JSON / 400 parser errors, `AppError`-style 4xx errors, and final 500 responses. Development responses may include stack details; production responses do not. |
+
+This means CORS rejection and payload-size normalization happen before the
+generic internal-error handler, while route-local errors that skip those special
+cases are ultimately normalized by `handleInternalError` and then by the outer
+standard response envelope.
