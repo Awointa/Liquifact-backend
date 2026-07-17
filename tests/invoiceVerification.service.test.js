@@ -599,6 +599,14 @@ describe('Invoice Verification Service - Comprehensive Decision Matrix', () => {
       expect(result).toEqual({ status: 'VERIFIED' });
     });
 
+    it('should handle explicitly null or undefined options parameter', async () => {
+      const resultNull = await verifyInvoice({ amount: 5000, customer: 'Acme Corp' }, null);
+      expect(resultNull).toEqual({ status: 'VERIFIED' });
+
+      const resultUndefined = await verifyInvoice({ amount: 5000, customer: 'Acme Corp' }, undefined);
+      expect(resultUndefined).toEqual({ status: 'VERIFIED' });
+    });
+
     it('should treat undefined amount field as invalid', async () => {
       const result = await verifyInvoice({ amount: undefined, customer: 'Acme Corp' });
       expect(result).toEqual({
@@ -833,6 +841,24 @@ describe('Invoice Verification Service - Comprehensive Decision Matrix', () => {
       // Structural checks run before threshold resolution, so this is a clean reject.
       const result = await verifyInvoice({ amount: -1, customer: 'Acme' });
       expect(result.reasonCode).toBe(ReasonCode.INVALID_AMOUNT);
+    });
+
+    it('propagates non-VerificationConfigError exceptions from threshold resolution', async () => {
+      const originalHas = Map.prototype.has;
+      Map.prototype.has = function (key) {
+        if (key === 'cause-generic-error') {
+          throw new TypeError('Generic Map error');
+        }
+        return originalHas.apply(this, arguments);
+      };
+
+      try {
+        await expect(
+          verifyInvoice({ amount: 5000, customer: 'Acme' }, { tenantId: 'cause-generic-error' })
+        ).rejects.toThrow(TypeError);
+      } finally {
+        Map.prototype.has = originalHas;
+      }
     });
   });
 });
