@@ -22,6 +22,7 @@
 const JobQueue = require('./jobQueue');
 const logger = require('../logger');
 const metrics = require('../metrics');
+const auditLogStore = require('../services/auditLogStore');
 
 /**
  * Background worker that processes queued jobs.
@@ -206,7 +207,7 @@ class BackgroundWorker {
       this.processingCount += 1;
 
       this._processJob(job).catch((err) => {
-        logger.error({ err, jobId: job.id }, 'Unexpected error processing job');
+        logger.error({ err, ...buildJobContext(job) }, 'Unexpected error processing job');
       });
     }
 
@@ -237,6 +238,7 @@ class BackgroundWorker {
 
       this.jobQueue.ack(job.id);
     } catch (err) {
+      logger.error({ err, ...buildJobContext(job) }, 'Job handler failed');
       this.jobQueue.retry(job.id, err);
     } finally {
       this.processingCount -= 1;
@@ -246,21 +248,41 @@ class BackgroundWorker {
 
 
 /**
- * Build a compact execution context object for logging from a job record.
- * Only a safe subset of payload keys are copied to avoid leaking secrets.
+ * Allow-listed payload keys that are safe to surface in error logs.
+ * Everything else in the payload (webhook secrets, signing tokens, full
+ * invoice bodies, …) is deliberately dropped.
+ *
+ * @type {Set<string>}
+ */
+const CONTEXT_KEYS = new Set([
+  'tenantId', 'invoiceId', 'correlationId', 'performedBy', 'policyId', 'batchSize',
+]);
+
+/**
+ * Build a compact, log-safe execution context object from a job record.
+ *
+ * The context always carries `jobId`, `jobType`, and `attempt` (the attempt
+ * count at the time of failure). From the job payload, only the allow-listed
+ * {@link CONTEXT_KEYS} are copied — and only when their values are primitives
+ * (string/number/boolean/null), so nested objects can never smuggle secrets
+ * into logs. When present, `correlationId` links the failure back to the
+ * request that enqueued the job.
+ *
+ * As defence in depth, the assembled context is passed through the shared
+ * `redactValue` scrubber from `services/auditLogStore`, which masks any value
+ * whose key matches a sensitive pattern (password, secret, token, apiKey, …).
  *
  * @param {Object} job - Job record from the queue
- * @returns {Object} Context with jobId, jobType, attempt, and allowed payload keys
+ * @returns {Object} Redacted context with jobId, jobType, attempt, and allowed payload keys
  */
 function buildJobContext(job) {
-  if (!job || typeof job !== 'object') return {};
+  if (!job || typeof job !== 'object') { return {}; }
   const ctx = {
     jobId: job.id,
     jobType: job.type,
     attempt: job.attempts ?? job.attempt ?? 1,
   };
 
-  const CONTEXT_KEYS = new Set(['tenantId', 'invoiceId', 'correlationId', 'performedBy', 'policyId', 'batchSize']);
   const payload = job.payload || {};
   if (payload && typeof payload === 'object') {
     for (const k of CONTEXT_KEYS) {
@@ -273,7 +295,7 @@ function buildJobContext(job) {
       }
     }
   }
-  return ctx;
+  return auditLogStore.redactValue(ctx);
 }
 
 module.exports = BackgroundWorker;

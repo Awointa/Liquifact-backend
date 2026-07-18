@@ -193,6 +193,29 @@ The application exposes Prometheus metrics on `GET /metrics` (subject to the sam
 
 These gauges are updated by sampling registered `JobQueue` and `BackgroundWorker` instances and are intentionally bounded to avoid high-cardinality labels.
 
+### Worker error-log context
+
+When a background job handler throws, the worker (`src/workers/worker.js`) logs a
+structured `Job handler failed` error through `src/logger.js` before scheduling the
+retry. Each log line carries enough context to trace the failure back to a tenant
+and, when available, to the request that enqueued the job:
+
+- `jobId`, `jobType`, and `attempt` — which job failed and on which attempt.
+- A **safe allow-listed subset** of the job payload: `tenantId`, `invoiceId`,
+  `correlationId`, `performedBy`, `policyId`, `batchSize`. Only primitive values
+  are copied; nested objects are never logged.
+- `err` — the thrown error, serialized by pino.
+
+Full payloads are never logged, so webhook secrets, signing tokens, and invoice
+bodies cannot leak into logs. As defence in depth, the assembled context is also
+passed through the shared `redactValue` scrubber from `src/services/auditLogStore.js`,
+which masks any value whose key matches a sensitive pattern (`password`, `secret`,
+`token`, `apiKey`, `authorization`, `privateKey`, `seed`, `mnemonic`).
+
+If the enqueuing request placed a `correlationId` on the payload, the error log can
+be joined against that request's API logs for end-to-end tracing. Retry behaviour is
+unchanged: the failure is logged and the job is re-queued with exponential backoff.
+
 Soroban metric labels are intentionally coarse and bounded:
 
 - `method` is normalized to a small allowlist of method families such as `contract_call`, `simulate_transaction`, and `get_ledger_entries`. Unknown or untrusted values are collapsed to `unknown`.
