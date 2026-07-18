@@ -25,7 +25,10 @@ class JobQueue {
   constructor(options = {}) {
     this.maxRetries   = Math.min(options.maxRetries ?? 3, 10);
     this.maxQueueSize = options.maxQueueSize || 10000;
-    
+
+    /** @type {object|null} Optional persistence adapter (durable mirror). */
+    this._persistence = options.persistence || null;
+
     // Using Map for efficient O(1) lookups
     this.jobs = new Map();
     
@@ -209,12 +212,25 @@ class JobQueue {
   async restoreFromPersistence() {
     if (!this._persistence) { return 0; }
 
-    const recovered = await this._persistence.recoverUnackedJobs();
+    let recovered;
+    try {
+      recovered = await this._persistence.recoverUnackedJobs();
+    } catch (_err) {
+      // Recovery failure must never block startup — degrade to empty queue.
+      return 0;
+    }
     let count = 0;
 
     for (const job of recovered) {
       if (this.jobs.has(job.id)) { continue; }
       if (this.queue.length + this.retryQueue.length >= this.maxQueueSize) { break; }
+
+      // In-flight jobs from a crashed process are re-run (at-least-once):
+      // reset to PENDING so _isReadyToProcess accepts them again.
+      if (job.status === JOB_STATUS.PROCESSING) {
+        job.status    = JOB_STATUS.PENDING;
+        job.startedAt = null;
+      }
 
       this.jobs.set(job.id, job);
       // Jobs that already had attempts go to the retry queue; fresh ones to main.

@@ -994,24 +994,11 @@ const sorobanRpcRetryCausesTotal = new client.Counter({
   registers: [registry],
 });
 
-const footprintCacheHitsTotal = new client.Counter({
-  name: 'footprint_cache_hits_total',
-  help: 'Total footprint cache hits',
-  registers: [registry],
-});
-
-const footprintCacheMissesTotal = new client.Counter({
-  name: 'footprint_cache_misses_total',
-  help: 'Total footprint cache misses',
-  registers: [registry],
-});
-
-const footprintCacheEvictionsTotal = new client.Counter({
-  name: 'footprint_cache_evictions_total',
-  help: 'Total footprint cache evictions',
-  registers: [registry],
-});
-
+/**
+ * Returns the shared Prometheus registry.
+ *
+ * @returns {import('prom-client').Registry} The metrics registry.
+ */
 function getRegistry() {
   return registry;
 }
