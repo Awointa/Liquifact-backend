@@ -10,6 +10,7 @@
  
 const db = require('../db/knex');
 const logger = require('../logger');
+const { MemoryCacheStore } = require('./cacheStore');
  
 const KYC_STATUSES = {
   PENDING: 'pending',
@@ -40,6 +41,31 @@ const PROVIDER_STATUS_MAP = {
  
 // In-memory store for KYC records (used in test/dev environments)
 const mockKycRecords = new Map();
+
+/**
+ * Short-TTL cache for external KYC provider status lookups (issue #440).
+ * Backed by MemoryCacheStore so eviction / invalidation is consistent across
+ * all cache users in the process.
+ *
+ * @type {MemoryCacheStore}
+ */
+const kycStatusCache = new MemoryCacheStore({ maxEntries: 2000 });
+
+/**
+ * Key prefix used to namespace external KYC status cache entries.
+ * Keeps KYC cache keys from colliding with other cache users.
+ *
+ * @constant {string}
+ */
+const STATUS_CACHE_KEY_PREFIX = 'kyc:ext:';
+
+/**
+ * Default TTL (in seconds) for the external KYC status cache.
+ * 30 s strikes a balance between freshness and avoiding provider rate limits.
+ *
+ * @constant {number}
+ */
+const DEFAULT_STATUS_CACHE_TTL_SECONDS = 30;
  
 /**
  * Configuration for external KYC provider.
@@ -245,6 +271,12 @@ async function persistKycRecord({ smeId, status, providerRecordId = null, verifi
     verified_at: verifiedAt || null,
     updated_at: updatedAt,
   };
+
+  // Invalidate the short-TTL cache entry BEFORE writing to DB so that any
+  // concurrent reader that checks the cache after this point will miss
+  // and consult the DB (or provider) for the fresh status. This prevents
+  // a stale cached "verified" from outliving a subsequent revocation write.
+  invalidateKycStatusCache(smeId);
  
   const existing = await db('kyc_records').where({ sme_id: smeId }).first();
   if (existing) {
@@ -546,4 +578,6 @@ module.exports = {
   resetMockRecords,
   getKycProviderConfig,
   normalizeProviderStatus, // Export for direct testing
+  getStatusCacheTtlMs, // Export for testing (cache TTL behaviour)
+  invalidateKycStatusCache, // Export for testing (cache invalidation)
 };

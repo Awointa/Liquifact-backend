@@ -39,6 +39,39 @@ A migration has been added to create the `kyc_records` table:
 - Columns: `sme_id` (Primary Key), `status` (pending/verified/rejected/exempted), `provider_record_id`, `verified_at`, `updated_at`.
 - All mock verification functions (`verifySmeSafe`, `rejectSmeKyc`, `exemptSmeFromKyc`) and external provider lookups persist status updates directly to this table. This ensures KYC state survives process restarts and is shared across replicas.
 
+### Persistence Architecture (Issue #593)
+
+KYC status records are persisted to the `kyc_records` table via the `persistKycRecord()` helper:
+
+**Primary persistence path** (`getKycStatus` → `readKycRecord`):
+1. If external provider is configured → read through short-TTL cache, fall back to DB on provider failure.
+2. If no provider → read straight from `kyc_records` table.
+3. If no DB record → fall back to in-memory `mockKycRecords` (dev/test only).
+4. Final fallback → returns `{ status: 'pending' }`.
+
+**Write path** (`verifySmeSafe`, `rejectSmeKyc`, `exemptSmeFromKyc`, KYC webhook):
+1. Update in-memory `mockKycRecords` (backward-compatible for dev/test).
+2. Call `persistKycRecord()` which: invalidates the short-TTL cache entry, upserts the record into `kyc_records`.
+3. The cache invalidation happens **before** the DB write so that concurrent readers cannot serve a stale cached approval past a revocation event.
+
+**Restart survivability**:
+- On restart, `mockKycRecords` is empty (process-local).
+- `getKycStatus` falls through to `readKycRecord`, which reads from the `kyc_records` table.
+- Status survives restarts and is shared across all replicas that share the same database.
+
+**Idempotency**:
+- `persistKycRecord` uses an upsert pattern (check → insert or update).
+- Re-verifying an already-verified SME is safe; the record is updated in-place.
+- Duplicate webhook deliveries produce the same result without errors.
+
+**Tenant scoping (future enhancement)**:
+- The current `kyc_records` schema is keyed by `sme_id` only. For multi-tenant
+  deployments where the same `sme_id` could exist across tenants, the table
+  should gain a `tenant_id` column and a composite unique constraint on
+  `(tenant_id, sme_id)`. All reads and writes through `persistKycRecord` and
+  `readKycRecord` would then need to scope by the request's tenant context.
+  This is tracked as a follow-up item.
+
 Run migrations:
 ```bash
 npm run db:migrate
