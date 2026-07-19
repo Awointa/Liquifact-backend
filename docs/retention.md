@@ -36,7 +36,7 @@ The LiquiFact data retention system provides automated PII (Personally Identifia
 - `invoice_id` - Reference to affected invoice
 - `operation` - Type of operation performed
 - `pii_fields` - PII fields affected
-- `old_values` - Salted SHA-256 hashes of original PII values (for real purges) or clear-text values (for dry runs) before purging
+- `old_values` - For destructive purges, salted SHA-256 hashes of non-null original PII values keyed by field name; dry-run behavior is unchanged
 - `performed_by` - User who initiated the operation
 
 #### Job Executions (`retention_job_executions`)
@@ -69,9 +69,21 @@ The system currently supports purging the following PII fields from invoices:
 
 ### Audit Trail
 - Every retention operation is logged with complete context
-- Captures original PII values before purging
-- Tracks who performed the operation and when
+- Captures a minimal hashed before-state for destructive purges: field names, salted hashes of non-null prior values, and counts in metadata
+- Tracks who performed the operation and the policy id that authorized the purge
 - Immutable audit records for compliance
+
+#### Destructive purge before-state snapshots
+
+Non-dry-run purges write one `retention_audit_log` row per invoice that is actually purged. To support forensic audit without re-storing PII, the row includes:
+
+- `pii_fields` with the field names selected for purge.
+- `old_values` with only salted SHA-256 hashes for fields that had non-null values before deletion.
+- `performed_by` for the actor that scheduled or initiated the job.
+- `metadata.policyId` for the retention policy used.
+- `metadata.beforeStateSnapshot` with field names plus field/hash counts.
+
+The snapshot never stores clear-text PII. Dry-run logging and `retention_job_executions` records remain unchanged. Legal holds are checked during eligibility selection and re-checked immediately before each invoice purge.
 
 #### Policy and legal-hold mutations (`audit_log_events`)
 
