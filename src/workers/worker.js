@@ -20,6 +20,7 @@
  */
 
 const JobQueue = require('./jobQueue');
+const { createJobPersistence } = require('./jobPersistence');
 const logger = require('../logger');
 const metrics = require('../metrics');
 
@@ -36,6 +37,31 @@ const metrics = require('../metrics');
  *
  * @class BackgroundWorker
  */
+function isPersistenceEnabled() {
+  return String(process.env.JOB_QUEUE_PERSISTENCE_ENABLED || '').toLowerCase() === 'true';
+}
+
+function getMaxRecoveryRows() {
+  const parsed = parseInt(process.env.JOB_QUEUE_MAX_RECOVERY_ROWS || '1000', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
+}
+
+/**
+ * Creates the default queue, enabling durable backing only when the feature flag is set.
+ *
+ * @returns {JobQueue} Queue instance.
+ */
+function createDefaultJobQueue() {
+  if (!isPersistenceEnabled()) {
+    return new JobQueue();
+  }
+
+  const db = require('../db/knex');
+  return new JobQueue({
+    persistence: createJobPersistence(db, { maxRecoveryRows: getMaxRecoveryRows() }),
+  });
+}
+
 class BackgroundWorker {
   /**
    * Creates a new BackgroundWorker instance.
@@ -46,7 +72,7 @@ class BackgroundWorker {
    * @param {number}   [options.maxConcurrency=2]    - Max concurrent job processing
    */
   constructor(options = {}) {
-    this.jobQueue = options.jobQueue || new JobQueue();
+    this.jobQueue = options.jobQueue || createDefaultJobQueue();
 
     // Security: bound poll interval to prevent CPU spinning
     this.pollIntervalMs = Math.max(options.pollIntervalMs ?? 1000, 10);
@@ -277,4 +303,7 @@ function buildJobContext(job) {
 }
 
 module.exports = BackgroundWorker;
+module.exports.createDefaultJobQueue = createDefaultJobQueue;
+module.exports.isPersistenceEnabled = isPersistenceEnabled;
+module.exports.getMaxRecoveryRows = getMaxRecoveryRows;
 module.exports.buildJobContext = buildJobContext;
