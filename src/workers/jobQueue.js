@@ -6,6 +6,11 @@
 
 const crypto = require('crypto');
 const metrics = require('../metrics');
+const logger = require('../logger');
+
+const REDACTED = '[REDACTED]';
+const SECRET_KEY_PATTERN = /(secret|token|password|api[_-]?key|authorization|credential)/i;
+const NON_TERMINAL_STATUSES = ['pending', 'processing', 'retrying'];
 
 const JOB_STATUS = {
   PENDING:    'pending',
@@ -25,10 +30,8 @@ class JobQueue {
   constructor(options = {}) {
     this.maxRetries   = Math.min(options.maxRetries ?? 3, 10);
     this.maxQueueSize = options.maxQueueSize || 10000;
-
-    /** @type {object|null} Optional persistence adapter (durable mirror). */
     this._persistence = options.persistence || null;
-
+    
     // Using Map for efficient O(1) lookups
     this.jobs = new Map();
     
@@ -215,8 +218,8 @@ class JobQueue {
     let recovered;
     try {
       recovered = await this._persistence.recoverUnackedJobs();
-    } catch (_err) {
-      // Recovery failure must never block startup — degrade to empty queue.
+    } catch (err) {
+      logger.error({ err }, '[jobQueue] Failed to recover persisted jobs; starting empty');
       return 0;
     }
     let count = 0;
@@ -225,10 +228,8 @@ class JobQueue {
       if (this.jobs.has(job.id)) { continue; }
       if (this.queue.length + this.retryQueue.length >= this.maxQueueSize) { break; }
 
-      // In-flight jobs from a crashed process are re-run (at-least-once):
-      // reset to PENDING so _isReadyToProcess accepts them again.
       if (job.status === JOB_STATUS.PROCESSING) {
-        job.status    = JOB_STATUS.PENDING;
+        job.status = JOB_STATUS.PENDING;
         job.startedAt = null;
       }
 
