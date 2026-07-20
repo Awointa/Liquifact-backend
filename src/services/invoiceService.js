@@ -94,6 +94,43 @@ function nowValue() {
     : new Date().toISOString();
 }
 
+/**
+ * Stub state-machine transition executor.
+ *
+ * TODO: Replace with the full invoice state-machine implementation.
+ * Currently validates that the transition is structurally well-formed and
+ * returns a simple result object.  All real validation and audit-log
+ * persistence must be wired in here when the state machine is ready.
+ *
+ * @param {object} ctx - Transition context.
+ * @param {string} ctx.invoiceId
+ * @param {string} ctx.currentState
+ * @param {string} ctx.targetState
+ * @param {string} ctx.actor
+ * @param {string} [ctx.reason]
+ * @param {string} [ctx.ipAddress]
+ * @param {string} [ctx.userAgent]
+ * @param {object} [ctx.metadata]
+ * @returns {Promise<{previousState: string, newState: string}>}
+ */
+async function executeTransition(ctx) {
+  // Minimal stub — the real state machine belongs in its own module.
+  // For now this just returns the target state so the rest of the
+  // transitionInvoice pipeline (status update, audit logging) works.
+  const { currentState, targetState } = ctx;
+
+  if (!currentState || !targetState) {
+    const err = new Error('Invalid state transition context');
+    err.code = 'INVALID_TRANSITION';
+    throw err;
+  }
+
+  return {
+    previousState: currentState,
+    newState: targetState,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // DB-backed methods
 // ---------------------------------------------------------------------------
@@ -441,6 +478,125 @@ async function transitionInvoice(invoiceId, targetState, tenantId, options = {})
 }
 
 // ---------------------------------------------------------------------------
+// SME Dashboard Metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Status-to-category mapping for SME dashboard metrics.
+ *
+ * Each invoice status maps to exactly one dashboard category:
+ * - **open** — invoices awaiting verification or verified but not yet funded.
+ * - **funded** — invoices that have been funded but not yet settled.
+ * - **settled** — invoices that are fully settled or paid.
+ * - **defaulted** — invoices that have entered default.
+ *
+ * Statuses **not** listed here (e.g. `withdrawn`) are intentionally excluded
+ * from every category so they do not inflate any bucket.
+ *
+ * @constant {Record<string, string>}
+ */
+const STATUS_CATEGORY_MAP = {
+  pending_verification: 'open',
+  verified: 'open',
+  funded: 'funded',
+  settled: 'settled',
+  paid: 'settled',
+  defaulted: 'defaulted',
+};
+
+/**
+ * Pre-computed grouping of statuses by dashboard category, derived once
+ * from {@link STATUS_CATEGORY_MAP} at module load.
+ *
+ * E.g.: `{ open: ['pending_verification', 'verified'], funded: ['funded'], … }`
+ *
+ * @constant {Record<string, string[]>}
+ */
+const CATEGORY_STATUSES = (() => {
+  /** @type {Record<string, string[]>} */
+  const groups = {};
+  for (const [status, category] of Object.entries(STATUS_CATEGORY_MAP)) {
+    if (!groups[category]) {
+      groups[category] = [];
+    }
+    groups[category].push(status);
+  }
+  return groups;
+})();
+
+/**
+ * Ordered list of category names derived from {@link CATEGORY_STATUSES}.
+ * Guarantees a deterministic SELECT clause order across invocations.
+ *
+ * @constant {string[]}
+ */
+const CATEGORY_NAMES = Object.keys(CATEGORY_STATUSES);
+
+/**
+ * Returns aggregated invoice counts grouped by SME dashboard category,
+ * scoped to a single tenant and SME owner.
+ *
+ * The query produces a single database row with one integer column per
+ * category defined in {@link STATUS_CATEGORY_MAP} (`open`, `funded`,
+ * `settled`, `defaulted`).  The `SUM(CASE …)` clauses are built
+ * **programmatically** from {@link STATUS_CATEGORY_MAP} so the constant
+ * is the single source of truth — adding or removing a status mapping
+ * automatically updates the aggregation without touching the SQL.
+ *
+ * Statuses not listed in the map (e.g. `withdrawn`) are excluded from
+ * every category.  Soft-deleted invoices (`deleted_at IS NOT NULL`) are
+ * always excluded.
+ *
+ * @param {string} tenantId - Tenant identifier (required, from `extractTenant` middleware).
+ * @param {string} userId   - SME owner identifier (required, matches `sme_id` column).
+ * @returns {Promise<{open: number, funded: number, settled: number, defaulted: number}>}
+ *   Always returns an object with all four keys; missing categories default to `0`.
+ * @throws {TypeError} When tenantId or userId is missing or not a non-empty string.
+ *
+ * @security
+ *   - Scoped to `tenant_id` and `sme_id` on every query — no cross-tenant or
+ *     cross-owner data leakage.
+ *   - Uses positional (parameterised) bindings via Knex `.where()`.
+ */
+async function getSmeInvoiceCounts(tenantId, userId) {
+  if (!tenantId || typeof tenantId !== 'string') {
+    throw new TypeError('tenantId is required');
+  }
+  if (!userId || typeof userId !== 'string') {
+    throw new TypeError('userId is required');
+  }
+
+  // Build one SUM(CASE WHEN status IN (...) THEN 1 ELSE 0 END) AS <category>
+  // per category using the pre-computed grouping so there is zero duplication
+  // between STATUS_CATEGORY_MAP and the SQL.
+  const selectClauses = CATEGORY_NAMES.map((category) => {
+    const statuses = CATEGORY_STATUSES[category];
+    // Status values come from the hardcoded STATUS_CATEGORY_MAP constant,
+    // so string interpolation is safe here — no user input reaches this path.
+    const inClause = statuses.map((s) => `'${s}'`).join(', ');
+    return db.raw(
+      `SUM(CASE WHEN status IN (${inClause}) THEN 1 ELSE 0 END) AS ??`,
+      [category],
+    );
+  });
+
+  const row = await db('invoices')
+    .where({ tenant_id: tenantId, sme_id: userId })
+    .whereNull('deleted_at')
+    .select(...selectClauses)
+    .first();
+
+  // When no rows match, the aggregate still returns one row with NULL
+  // values in SQLite; coerce every column to a safe integer.
+  /** @type {{open: number, funded: number, settled: number, defaulted: number}} */
+  const result = {};
+  for (const category of CATEGORY_NAMES) {
+    result[category] = Number(row?.[category]) || 0;
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // KYC helpers (in-memory — retained for backward compat with existing tests)
 // ---------------------------------------------------------------------------
 
@@ -510,6 +666,9 @@ module.exports = {
   resolveInvoiceForTenant,
   transitionInvoice,
   parseInvoiceMetadata,
+  // SME dashboard metrics
+  getSmeInvoiceCounts,
+  STATUS_CATEGORY_MAP,
   // KYC helpers (in-memory)
   getInvoicesByKycStatus,
   updateInvoiceKycStatus,
