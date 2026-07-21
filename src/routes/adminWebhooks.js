@@ -26,8 +26,14 @@ const db = require('../db/knex');
 const { replayWebhook, resolveDeadLetter } = require('../services/webhooks');
 const { webhookReplayTotal } = require('../metrics');
 const { authenticateToken } = require('../middleware/auth');
-const { apiKeyAuth } = require('../middleware/apiKey');
+const { authenticateApiKey } = require('../middleware/apiKeyAuth');
 const logger = require('../logger');
+
+/**
+ * Pre-built API key middleware — built once so factory overhead is paid at
+ * module-load time rather than on every request.
+ */
+const _adminApiKeyMiddleware = authenticateApiKey();
 
 /**
  * Accepts either a valid admin JWT or a valid API key.
@@ -35,7 +41,7 @@ const logger = require('../logger');
  */
 function adminAuth(req, res, next) {
   if (req.headers['x-api-key']) {
-    return apiKeyAuth(req, res, next);
+    return _adminApiKeyMiddleware(req, res, next);
   }
   return authenticateToken(req, res, next);
 }
