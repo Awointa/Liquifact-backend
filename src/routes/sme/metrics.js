@@ -16,7 +16,6 @@ const invoiceService = require('../../services/invoiceService');
  * @swagger
  * /api/sme/metrics:
  *   get:
- *     operationId: getSmeMetrics
  *     summary: Get SME dashboard metrics
  *     description: Returns aggregated, tenant- and owner-scoped invoice metrics for the authenticated SME user.
  *     tags: [SME]

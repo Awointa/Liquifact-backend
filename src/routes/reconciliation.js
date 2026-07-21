@@ -39,7 +39,6 @@ router.use(...adminStack);
  * @swagger
  * /api/admin/reconciliation/runs:
  *   get:
- *     operationId: listReconciliationRuns
  *     summary: List recent escrow reconciliation runs (paginated)
  *     description: |
  *       Returns a paginated list of nightly escrow reconciliation runs from
