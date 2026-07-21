@@ -12,6 +12,13 @@
  * tests (`tests/contract/api-schemas.test.js`) and the OpenAPI tests
  * (`tests/openapi.test.js`).
  *
+ * Server URLs are derived from the `PUBLIC_API_BASE_URL` environment variable
+ * (via `src/config/index.js`) rather than being hardcoded. In development and
+ * test environments a localhost fallback is used when the variable is absent.
+ * In production the variable is required, must use HTTPS, and must not resolve
+ * to a loopback address — all of which are enforced at config validation time
+ * by `src/config/index.js`.
+ *
  * @module openapi/openapiSpec
  */
 
@@ -21,8 +28,114 @@ const swaggerJsdoc = require('swagger-jsdoc');
 const ROUTES_GLOB = path.join(__dirname, '..', 'routes', '**', '*.js');
 
 /**
+ * The hostname pattern for loopback addresses (localhost, 127.x.x.x, ::1).
+ * Used to guard against accidentally publishing a loopback URL in the spec.
+ * Handles both bare IPv6 loopback `::1` and bracket-wrapped `[::1]` which is
+ * how `new URL('https://[::1]').hostname` appears in Node.js.
+ */
+const LOOPBACK_HOSTNAME = /^(localhost|127(?:\.\d+){3}|::1|\[::1\])$/i;
+
+/**
+ * Default fallback server entry used only in development and test.
+ */
+const DEV_FALLBACK_SERVER = {
+  url: 'http://localhost:3001',
+  description: 'Local development',
+};
+
+/**
+ * Build the servers array for the OpenAPI document.
+ *
+ * Resolution order:
+ * 1. `PUBLIC_API_BASE_URL` from the validated config (any env).
+ * 2. `PUBLIC_API_BASE_URL` from `process.env` directly (covers the narrow
+ *    window before `validate()` has been called, e.g. during spec generation
+ *    inside test helpers).
+ * 3. Dev/test fallback — `http://localhost:3001`. This path is intentionally
+ *    unreachable in production because `src/config/index.js` aborts startup
+ *    when `PUBLIC_API_BASE_URL` is absent or invalid in `NODE_ENV=production`.
+ *
+ * @returns {Array<{url: string, description: string}>} Non-empty servers array.
+ * @throws {Error} When called in a production context but no valid base URL
+ *   can be resolved (defense-in-depth guard — config validation should have
+ *   already caught this at boot time).
+ */
+function buildServers() {
+  // Attempt to read from the already-validated config first.
+  let baseUrl = null;
+  try {
+    const { get } = require('../config');
+    const cfg = get();
+    baseUrl = cfg.PUBLIC_API_BASE_URL || null;
+  } catch (_) {
+    // Config not yet validated (e.g. called from a test before validate()).
+    // Fall through to direct env read below.
+  }
+
+  // Direct env read as a second source (covers pre-validation callers).
+  if (!baseUrl) {
+    baseUrl = process.env.PUBLIC_API_BASE_URL || null;
+  }
+
+  const nodeEnv = process.env.NODE_ENV || 'development';
+
+  if (baseUrl) {
+    // Strip trailing slash for consistency.
+    const normalised = baseUrl.replace(/\/+$/, '');
+
+    let parsed;
+    try { parsed = new URL(normalised); } catch (_) { parsed = null; }
+
+    // Defense-in-depth: reject a loopback URL that somehow slipped through
+    // config validation (e.g. spec built before the server starts in prod).
+    if (nodeEnv === 'production' && parsed && LOOPBACK_HOSTNAME.test(parsed.hostname)) {
+      throw new Error(
+        `PUBLIC_API_BASE_URL must not be a loopback address in production. Got: ${normalised}`,
+      );
+    }
+    if (nodeEnv === 'production' && parsed && parsed.protocol !== 'https:') {
+      throw new Error(
+        `PUBLIC_API_BASE_URL must use HTTPS in production. Got: ${normalised}`,
+      );
+    }
+    if (nodeEnv === 'production' && !parsed) {
+      throw new Error(
+        `PUBLIC_API_BASE_URL is not a valid URL in production. Got: ${baseUrl}`,
+      );
+    }
+
+    const description =
+      nodeEnv === 'production'
+        ? 'Production API'
+        : nodeEnv === 'test'
+          ? 'Test server'
+          : 'API server';
+
+    return [{ url: normalised, description }];
+  }
+
+  // No base URL configured.
+  if (nodeEnv === 'production') {
+    // Should never reach here — config validation prevents startup without
+    // PUBLIC_API_BASE_URL in production. Guard anyway so spec generation
+    // never silently emits a loopback URL to a production consumer.
+    throw new Error(
+      'PUBLIC_API_BASE_URL is required in production but was not set. ' +
+      'Refusing to build the OpenAPI spec with a loopback server entry.',
+    );
+  }
+
+  // Development / test — safe to use the localhost fallback.
+  return [DEV_FALLBACK_SERVER];
+}
+
+/**
  * Base OpenAPI document. Route-specific operations are merged in by
  * `swagger-jsdoc` from the `@swagger` JSDoc blocks in route files.
+ *
+ * The `servers` array is intentionally left empty here; it is populated
+ * dynamically by `buildOpenApiSpec()` via `buildServers()` so the published
+ * spec always reflects the runtime environment rather than a hardcoded value.
  */
 const baseDefinition = {
   openapi: '3.0.0',
@@ -34,24 +147,7 @@ const baseDefinition = {
       'Successful responses use a standardized envelope (`data`/`meta`/`message`); ' +
       'error responses follow RFC 7807 (`application/problem+json`).',
   },
-  servers: [{ url: 'http://localhost:3001', description: 'Local development' }],
-  /**
-   * Top-level tag definitions used by all route operations.
-   * Every documented operation must reference one of these tags.
-   * Tags are used by client SDK generators (e.g. openapi-typescript-codegen)
-   * to group operations into service classes.
-   */
-  tags: [
-    { name: 'Invoices', description: 'Invoice management — create, read, update, delete, and file operations.' },
-    { name: 'Marketplace', description: 'Marketplace browse — search, filter, and paginate investable invoices.' },
-    { name: 'Invest', description: 'Investment operations — funding opportunities and invoice funding.' },
-    { name: 'Investor', description: 'Investor lock management — funder commitment and lock records.' },
-    { name: 'Admin', description: 'Administrative operations — reconciliation, escrow management, webhook replay, audit exports.' },
-    { name: 'KYC', description: 'Know-Your-Customer integration — webhook ingestion from the KYC provider.' },
-    { name: 'Escrow', description: 'Escrow contract operations — state reads, version checks, and refresh.' },
-    { name: 'SME', description: 'SME dashboard — metrics, invoice uploads, and presigned URL generation.' },
-    { name: 'Reconciliation', description: 'Escrow reconciliation — run history for admin review.' },
-  ],
+  servers: [],
   components: {
     securitySchemes: {
       bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
@@ -261,21 +357,25 @@ let cached = null;
  * Build the OpenAPI document. The result is memoised because spec generation
  * walks every route file with `swagger-jsdoc` and is non-trivial.
  *
- * Performs build-time validation:
- * - Every documented operation must have a unique `operationId`.
- * - No two operations can share the same `operationId`.
- * - Operations missing `operationId` are flagged as build errors.
+ * The `servers` array is derived at call time from `PUBLIC_API_BASE_URL` via
+ * `buildServers()`, so the published spec always reflects the runtime
+ * environment rather than a hardcoded localhost value.
  *
  * @returns {object} OpenAPI 3.0 document.
- * @throws {Error} When validation fails (duplicate or missing operationIds).
+ * @throws {Error} In production when `PUBLIC_API_BASE_URL` is absent, uses
+ *   HTTP, or resolves to a loopback address.
  */
 function buildOpenApiSpec() {
   if (cached) {
     return cached;
   }
 
+  // Resolve servers dynamically — must happen before swagger-jsdoc merges the
+  // definition so the generated document carries the correct server entries.
+  const servers = buildServers();
+
   const generated = swaggerJsdoc({
-    definition: baseDefinition,
+    definition: { ...baseDefinition, servers },
     apis: [ROUTES_GLOB],
   });
 
@@ -342,6 +442,7 @@ function _resetCache() {
 
 module.exports = {
   buildOpenApiSpec,
+  buildServers,
   baseDefinition,
   _resetCache,
 };
