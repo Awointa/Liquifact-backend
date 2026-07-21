@@ -35,6 +35,23 @@ const baseDefinition = {
       'error responses follow RFC 7807 (`application/problem+json`).',
   },
   servers: [{ url: 'http://localhost:3001', description: 'Local development' }],
+  /**
+   * Top-level tag definitions used by all route operations.
+   * Every documented operation must reference one of these tags.
+   * Tags are used by client SDK generators (e.g. openapi-typescript-codegen)
+   * to group operations into service classes.
+   */
+  tags: [
+    { name: 'Invoices', description: 'Invoice management — create, read, update, delete, and file operations.' },
+    { name: 'Marketplace', description: 'Marketplace browse — search, filter, and paginate investable invoices.' },
+    { name: 'Invest', description: 'Investment operations — funding opportunities and invoice funding.' },
+    { name: 'Investor', description: 'Investor lock management — funder commitment and lock records.' },
+    { name: 'Admin', description: 'Administrative operations — reconciliation, escrow management, webhook replay, audit exports.' },
+    { name: 'KYC', description: 'Know-Your-Customer integration — webhook ingestion from the KYC provider.' },
+    { name: 'Escrow', description: 'Escrow contract operations — state reads, version checks, and refresh.' },
+    { name: 'SME', description: 'SME dashboard — metrics, invoice uploads, and presigned URL generation.' },
+    { name: 'Reconciliation', description: 'Escrow reconciliation — run history for admin review.' },
+  ],
   components: {
     securitySchemes: {
       bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
@@ -244,7 +261,13 @@ let cached = null;
  * Build the OpenAPI document. The result is memoised because spec generation
  * walks every route file with `swagger-jsdoc` and is non-trivial.
  *
+ * Performs build-time validation:
+ * - Every documented operation must have a unique `operationId`.
+ * - No two operations can share the same `operationId`.
+ * - Operations missing `operationId` are flagged as build errors.
+ *
  * @returns {object} OpenAPI 3.0 document.
+ * @throws {Error} When validation fails (duplicate or missing operationIds).
  */
 function buildOpenApiSpec() {
   if (cached) {
@@ -255,6 +278,54 @@ function buildOpenApiSpec() {
     definition: baseDefinition,
     apis: [ROUTES_GLOB],
   });
+
+  // ── operationId Validation ─────────────────────────────────────────────────
+  // Client SDK generators (openapi-typescript-codegen, @openapitools/openapi-generator-cli)
+  // require every operation to have a unique operationId. Duplicate or missing
+  // operationIds break SDK method generation and cause client-side confusion.
+
+  const seenOperationIds = new Map(); // operationId -> { path, method }
+  const missing = []; // { path, method }
+
+  for (const [path, pathItem] of Object.entries(generated.paths)) {
+    for (const method of ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']) {
+      const operation = pathItem[method];
+      if (!operation) {
+        continue;
+      }
+
+      const operationId = operation.operationId;
+
+      if (!operationId) {
+        missing.push({ path, method: method.toUpperCase() });
+      } else {
+        const firstSeen = seenOperationIds.get(operationId);
+        if (firstSeen) {
+          throw new Error(
+            `Duplicate operationId "${operationId}" found:\n` +
+              `  First:  ${firstSeen.method} ${firstSeen.path}\n` +
+              `  Second: ${method.toUpperCase()} ${path}\n` +
+              `Every operation must have a unique operationId.`,
+          );
+        }
+        seenOperationIds.set(operationId, { path, method: method.toUpperCase() });
+      }
+    }
+  }
+
+  if (missing.length > 0) {
+    const lines = missing.map(({ path, method }) => `  ${method} ${path}`);
+    throw new Error(
+      `The following operations are missing an operationId:\n${lines.join('\n')}\n\n` +
+        `Add a unique operationId to each @swagger JSDoc block.\n` +
+        `Example:\n` +
+        `  @swagger\n` +
+        `  /api/marketplace:\n` +
+        `    get:\n` +
+        `      operationId: listMarketplaceInvoices\n` +
+        `      summary: ...\n`,
+    );
+  }
 
   cached = generated;
   return generated;
