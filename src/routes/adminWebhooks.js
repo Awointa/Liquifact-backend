@@ -26,16 +26,32 @@ const db = require('../db/knex');
 const { replayWebhook, resolveDeadLetter } = require('../services/webhooks');
 const { webhookReplayTotal } = require('../metrics');
 const { authenticateToken } = require('../middleware/auth');
-const { apiKeyAuth } = require('../middleware/apiKey');
+// Legacy src/middleware/apiKey.js has been retired in favour of the env-backed
+// registry authenticator. The implementation lives in apiKeyAuth.js and never
+// opens a SQLite connection per request — see issue #590.
+const { authenticateApiKey } = require('../middleware/apiKeyAuth');
 const logger = require('../logger');
 
 /**
- * Accepts either a valid admin JWT or a valid API key.
+ * Pre-built admin API key middleware (no required scope — any valid, non-revoked
+ * key is accepted). Built once so the factory overhead is paid at module load
+ * rather than on every request.
+ *
+ * @type {import('express').RequestHandler}
+ */
+const _adminApiKeyMiddleware = authenticateApiKey();
+
+/**
+ * Accepts either a valid admin JWT or a valid X-API-Key.
+ * Honours the existing X-API-KEY contract: when the header is present the
+ * request is authenticated against the env-backed key registry; otherwise it
+ * falls through to JWT auth.
+ *
  * @type {import('express').RequestHandler}
  */
 function adminAuth(req, res, next) {
   if (req.headers['x-api-key']) {
-    return apiKeyAuth(req, res, next);
+    return _adminApiKeyMiddleware(req, res, next);
   }
   return authenticateToken(req, res, next);
 }
@@ -48,7 +64,9 @@ router.post('/replay/:id', adminAuth, async (req, res) => {
   const { id } = req.params;
   try {
     await replayWebhook(id);
-    logger.info({ deadLetterId: id, adminClient: req.apiKey?.name || req.user?.sub }, 'Admin triggered replay');
+    // `req.apiClient` is set by src/middleware/apiKeyAuth.js on success; the
+    // JWT path sets `req.user`. The legacy `req.apiKey` no longer exists.
+    logger.info({ deadLetterId: id, adminClient: req.apiClient?.clientId || req.user?.sub }, 'Admin triggered replay');
     return res.status(202).json({ replayed: [id] });
   } catch (err) {
     if (err.code === 'NOT_FOUND') {
@@ -112,7 +130,7 @@ router.post('/replay', adminAuth, async (req, res) => {
   }
 
   logger.info(
-    { replayed: replayed.length, failed: failed.length, adminClient: req.apiKey?.name || req.user?.sub },
+    { replayed: replayed.length, failed: failed.length, adminClient: req.apiClient?.clientId || req.user?.sub },
     'Admin batch replay completed'
   );
 
@@ -133,7 +151,7 @@ router.post('/resolve/:id', adminAuth, async (req, res) => {
     return res.status(409).json({ error: `Dead-letter row already resolved: ${id}` });
   }
   await resolveDeadLetter(id);
-  logger.info({ deadLetterId: id, adminClient: req.apiKey?.name || req.user?.sub }, 'Admin resolved dead-letter without replay');
+  logger.info({ deadLetterId: id, adminClient: req.apiClient?.clientId || req.user?.sub }, 'Admin resolved dead-letter without replay');
   return res.status(200).json({ resolved: id });
 });
 

@@ -10,6 +10,22 @@
  *    › env override for isolated tests
  */
 
+// The middleware now emits structured pino log lines for every auth outcome
+// (missing / invalid / revoked / insufficient_scope / success). Mock the
+// shared logger at the module boundary so the existing 100+ assertions stay
+// silent on stdout and don't get noisy under CI log-volume gates. Dedicated
+// audit-invoked coverage lives in tests/apiKey.test.js.
+jest.mock('../../src/logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+  trace: jest.fn(),
+  fatal: jest.fn(),
+  child: jest.fn(),
+  createRequestLogger: jest.fn(),
+}));
+
 const request = require('supertest');
 const express = require('express');
 
