@@ -56,6 +56,7 @@ const adminWebhooksRoutes = require('./routes/adminWebhooks');
 const adminConfigRoutes = require('./routes/adminConfig');
 const kycRoutes = require('./routes/kyc');
 const reconciliationRoutes = require('./routes/reconciliation');
+const adminJobsRoutes = require('./routes/adminJobs');
 const v1Routes = require('./routes/v1');
 const apiKeysRoutes = require('./routes/apiKeys');
 const {
@@ -347,7 +348,7 @@ function createApp() {
   mountFeatureRouter(app, '/api/admin/webhooks', adminWebhooksRoutes);
   mountFeatureRouter(app, '/api/admin/config', adminConfigRoutes);
   mountFeatureRouter(app, '/api/admin/reconciliation', reconciliationRoutes);
-  mountFeatureRouter(app, '/api', apiKeysRoutes);
+  mountFeatureRouter(app, '/api/admin/jobs', adminJobsRoutes);
   mountFeatureRouter(app, '/v1', v1Routes);
 
   assertNoDuplicateRouterMounts();
