@@ -30,6 +30,7 @@ const { applyQueryOptions } = require('../utils/queryBuilder');
 const logger = require('../logger');
 const AppError = require('../errors/AppError');
 const { LOCKED_STATUSES } = require('../middleware/patchInvoice');
+const { executeTransition } = require('./invoiceStateMachine');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -92,43 +93,6 @@ function nowValue() {
   return db && db.fn && typeof db.fn.now === 'function'
     ? db.fn.now()
     : new Date().toISOString();
-}
-
-/**
- * Stub state-machine transition executor.
- *
- * TODO: Replace with the full invoice state-machine implementation.
- * Currently validates that the transition is structurally well-formed and
- * returns a simple result object.  All real validation and audit-log
- * persistence must be wired in here when the state machine is ready.
- *
- * @param {object} ctx - Transition context.
- * @param {string} ctx.invoiceId
- * @param {string} ctx.currentState
- * @param {string} ctx.targetState
- * @param {string} ctx.actor
- * @param {string} [ctx.reason]
- * @param {string} [ctx.ipAddress]
- * @param {string} [ctx.userAgent]
- * @param {object} [ctx.metadata]
- * @returns {Promise<{previousState: string, newState: string}>}
- */
-async function executeTransition(ctx) {
-  // Minimal stub — the real state machine belongs in its own module.
-  // For now this just returns the target state so the rest of the
-  // transitionInvoice pipeline (status update, audit logging) works.
-  const { currentState, targetState } = ctx;
-
-  if (!currentState || !targetState) {
-    const err = new Error('Invalid state transition context');
-    err.code = 'INVALID_TRANSITION';
-    throw err;
-  }
-
-  return {
-    previousState: currentState,
-    newState: targetState,
-  };
 }
 
 // ---------------------------------------------------------------------------
