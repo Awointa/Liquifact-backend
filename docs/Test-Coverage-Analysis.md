@@ -309,6 +309,3 @@ npm test -- --testPathPatterns="patchInvoice.guard.test.js"
 # With coverage report
 npm run test:coverage -- --testPathPatterns="patchInvoice.guard.test.js"
 ```
-
-See [`docs/patch-invoice-guard.md`](./patch-invoice-guard.md) for the full field-mutability
-reference, function signatures, and security notes.
