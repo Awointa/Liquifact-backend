@@ -245,6 +245,13 @@ function reloadCorsOrigins() {
   allowedOrigins = getAllowedOriginsFromEnv();
 }
 
+function validateCorsOrigin(origin, allowlist) {
+  if (origin === undefined) {
+    return true;
+  }
+  return allowlist.length > 0 && isAllowedOrigin(origin, allowlist);
+}
+
 /**
  * Builds the options object for the `cors` middleware package.
  *
@@ -303,15 +310,10 @@ function createCorsOptions(env = process.env) {
        * @returns {void}
        */
       origin(origin, callback) {
-        if (origin === undefined) {
+        if (validateCorsOrigin(origin, allowedOrigins)) {
           return callback(null, true);
         }
-
-        if (allowedOrigins.length === 0 || !isAllowedOrigin(origin, allowedOrigins)) {
-          return callback(createCorsRejectionError(origin));
-        }
-
-        return callback(null, true);
+        return callback(createCorsRejectionError(origin));
       },
 
       maxAge,
@@ -325,28 +327,23 @@ function createCorsOptions(env = process.env) {
 
   return {
     /**
-     * Validates request origin against the test-specific allowlist.
-     *
-     * - `undefined` (no Origin header): always passed — non-browser clients.
-     * - `"null"` (sandboxed iframe): always rejected.
-     * - Otherwise: normalized comparison against the allowlist.
-     *   Only an explicitly listed origin receives `Allow-Origin`; arbitrary
-     *   origins are never reflected together with credentials.
-     *
-     * @param {string|undefined} origin - The request origin header value.
-     * @param {Function} callback - CORS callback (err, allow).
-     * @returns {void}
-     */
+       * Validates request origin against the test-specific allowlist.
+       *
+       * - `undefined` (no Origin header): always passed — non-browser clients.
+       * - `"null"` (sandboxed iframe): always rejected.
+       * - Otherwise: normalized comparison against the allowlist.
+       *   Only an explicitly listed origin receives `Allow-Origin`; arbitrary
+       *   origins are never reflected together with credentials.
+       *
+       * @param {string|undefined} origin - The request origin header value.
+       * @param {Function} callback - CORS callback (err, allow).
+       * @returns {void}
+       */
     origin(origin, callback) {
-      if (origin === undefined) {
+      if (validateCorsOrigin(origin, testAllowlist)) {
         return callback(null, true);
       }
-
-      if (testAllowlist.length === 0 || !isAllowedOrigin(origin, testAllowlist)) {
-        return callback(createCorsRejectionError(origin));
-      }
-
-      return callback(null, true);
+      return callback(createCorsRejectionError(origin));
     },
 
     maxAge,
@@ -369,4 +366,5 @@ module.exports = {
   parseMaxAge,
   reloadCorsOrigins,
   resolveAllowlist,
+  validateCorsOrigin,
 };
