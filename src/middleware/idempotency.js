@@ -32,7 +32,8 @@ const { createProblemDetails, LIQUifact_PROBLEM_BASE } = require('./problemJson'
 const logger = require('../logger');
 let idempotencyStorageFailureTotal;
 try {
-  idempotencyStorageFailureTotal = require('../metrics').idempotencyStorageFailureTotal;
+  idempotencyStorageFailureTotal =
+    require('../metrics').idempotencyStorageFailureTotal || { inc: () => {} };
 } catch (_e) {
   idempotencyStorageFailureTotal = { inc: () => {} };
 }
@@ -335,8 +336,9 @@ function idempotencyMiddleware(req, res, next) {
     // Calling `trx(...)` after commit throws "Transaction committed".
     const originalJson = res.json.bind(res);
     res.json = function (body) {
-      // Persist response asynchronously — uses global db so it works after
-      // the transaction commits.
+      // Persist response with the global `db` (NOT the trx). The trx has
+      // already committed by the time res.json() is called, so using it
+      // would throw "Transaction query already complete".
       persistResponse(db, key, res.statusCode, body).catch((err) => {
         // This catch is for synchronous context errors (shouldn't happen)
         // Background retries are handled inside persistResponse

@@ -38,6 +38,7 @@ const {
   payloadTooLargeHandler,
   urlencodedBodyLimit,
 } = require('./middleware/bodySizeLimits');
+const healthRoutes = require('./routes/health');
 const { performHealthChecks, performReadinessChecks } = require('./services/health');
 const { validateHealthQuery, rejectBodyOnGet } = require('./schemas/health');
 const responseHelper = require('./utils/responseHelper');
@@ -380,6 +381,7 @@ function createApp() {
   mountFeatureRouter(app, '/api/investor', investorRoutes);
   mountFeatureRouter(app, '/api/kyc', kycRoutes);
   mountFeatureRouter(app, '/api/marketplace', marketplaceRoutes);
+  mountFeatureRouter(app, '/api/health', healthRoutes);
   mountFeatureRouter(app, '/api/retention', retentionRoutes);
   mountFeatureRouter(app, '/api/admin/audit', auditTrailRoutes);
   mountFeatureRouter(app, '/api/admin/escrow', adminEscrowRoutes);
