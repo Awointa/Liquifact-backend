@@ -1107,6 +1107,97 @@ const persistenceRequestErrorsTotal = new client.Counter({
   registers: [registry],
 });
 
+// ── KYC webhook metrics (issue #731) ────────────────────────────────────────
+
+/**
+ * Bounded enum of allowed `status_class` label values for KYC webhook metrics.
+ * @readonly
+ */
+const _KYC_WEBHOOK_STATUS_CLASS_ENUM = Object.freeze(['2xx', '4xx', '5xx']);
+
+/**
+ * Bounded enum of allowed `cause` label values for KYC webhook error metrics.
+ * Raw error messages are NEVER used as labels.
+ * @readonly
+ */
+const KYC_WEBHOOK_CAUSE_ENUM = Object.freeze([
+  'missing_secret',
+  'missing_signature',
+  'invalid_signature',
+  'invalid_payload',
+  'missing_sme_id',
+  'missing_status',
+  'unknown_status',
+  'persistence_error',
+  'internal',
+  'none',
+]);
+
+/**
+ * Maps an HTTP status code to a bounded `status_class` label value.
+ *
+ * @param {unknown} status - HTTP status code.
+ * @returns {string} Bounded value from {@link KYC_WEBHOOK_STATUS_CLASS_ENUM}.
+ */
+function normalizeKycWebhookStatusClass(status) {
+  const code = Number(status);
+  if (code >= 500) { return '5xx'; }
+  if (code >= 400) { return '4xx'; }
+  return '2xx';
+}
+
+/**
+ * Maps a KYC webhook error scenario to a bounded `cause` label value.
+ * Raw error messages or PII are never used.
+ *
+ * @param {object} params
+ * @param {number} params.status - HTTP status code.
+ * @param {string} [params.errorCode] - Structured error classification.
+ * @returns {string} Bounded value from {@link KYC_WEBHOOK_CAUSE_ENUM}.
+ */
+function normalizeKycWebhookCause({ status, errorCode }) {
+  if (errorCode && KYC_WEBHOOK_CAUSE_ENUM.includes(errorCode)) {
+    return errorCode;
+  }
+  const code = Number(status);
+  if (code < 400) { return 'none'; }
+  return 'internal';
+}
+
+/**
+ * Histogram: Wall-clock duration of KYC webhook endpoint requests in seconds.
+ * @type {import('prom-client').Histogram}
+ */
+const kycWebhookRequestDurationSeconds = new client.Histogram({
+  name: 'kyc_webhook_request_duration_seconds',
+  help: 'Duration of KYC webhook endpoint requests in seconds',
+  labelNames: ['status_class'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [registry],
+});
+
+/**
+ * Counter: Total KYC webhook requests by status class.
+ * @type {import('prom-client').Counter}
+ */
+const kycWebhookRequestsTotal = new client.Counter({
+  name: 'kyc_webhook_requests_total',
+  help: 'Total number of KYC webhook endpoint requests',
+  labelNames: ['status_class'],
+  registers: [registry],
+});
+
+/**
+ * Counter: KYC webhook request errors by cause.
+ * @type {import('prom-client').Counter}
+ */
+const kycWebhookErrorsTotal = new client.Counter({
+  name: 'kyc_webhook_errors_total',
+  help: 'Total number of KYC webhook endpoint request errors by cause',
+  labelNames: ['cause'],
+  registers: [registry],
+});
+
 
 /**
  * Returns the shared Prometheus registry.
@@ -1150,6 +1241,11 @@ module.exports = {
   cacheStoreErrorsTotal,
   redisCacheFailOpenTotal,
   sorobanCircuitBreakerStateTransitionsTotal,
+  kycWebhookRequestDurationSeconds,
+  kycWebhookRequestsTotal,
+  kycWebhookErrorsTotal,
+  normalizeKycWebhookStatusClass,
+  normalizeKycWebhookCause,
   normalizeJobType,
   normalizeReminderReason,
   normalizeSorobanRpcMethod,
