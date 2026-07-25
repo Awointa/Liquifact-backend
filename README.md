@@ -1757,39 +1757,48 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming, local checks, testing 
 
 ### Maturity Reminders
 
-The backend sends maturity reminders to relevant parties before invoices reach their settlement date. Email delivery includes built-in resiliency:
+The backend sends maturity reminders to relevant parties before invoices reach their settlement date. Email delivery includes built-in resiliency that prevents silent message loss and never crashes the background worker.
 
-- **Exponential backoff**: Transient SMTP failures (4xx, network errors) are automatically retried with configurable backoff (default: 3 attempts, ~1s base delay, doubling each attempt)
-- **Error classification**: Permanent SMTP failures (5xx, invalid recipient) fail immediately without retry to avoid wasting resources
-- **Dead-lettering**: Emails that fail after all retries are recorded as sanitized rows in `maturity_reminder_dead_letters` for durable inspection
-- **Observability**: Prometheus counters track delivery attempts, successes, and dead-lettered messages with fine-grained failure reasons
+- **Exponential backoff**: Transient SMTP failures (4xx, network errors) are automatically retried with configurable backoff. Default: 3 attempts, ~1 s base delay, doubling each attempt, ±20% jitter.
+- **Error classification**: Permanent SMTP failures (5xx response codes, "user unknown", "mailbox not found") fail immediately without retry. Transient failures are retried up to `SMTP_MAX_RETRIES` times.
+- **Dead-lettering**: After all retries are exhausted — or immediately on a permanent failure — a sanitized record is written to `maturity_reminder_dead_letters`. Recipient email, customer name, invoice amount, and raw SMTP errors are never stored.
+- **Observability**: Three Prometheus counters track every attempt, every successful delivery, and every dead-letter event with bounded, PII-free labels.
 
 #### Configuration
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `SMTP_HOST` | - | SMTP server hostname |
-| `SMTP_PORT` | 587 | SMTP server port |
-| `SMTP_USER` | - | SMTP authenticated username |
-| `SMTP_PASS` | - | SMTP authenticated password |
-| `SMTP_FROM` | `noreply@liquifact.com` | Sender email address |
-| `SMTP_MAX_RETRIES` | 3 | Maximum retry attempts for transient failures |
+| `SMTP_HOST` | unset | SMTP server hostname. When absent, the system runs in dry-run mode. |
+| `SMTP_PORT` | `587` | SMTP server port. |
+| `SMTP_USER` | unset | SMTP authenticated username. |
+| `SMTP_PASS` | unset | SMTP authenticated password. Never logged. |
+| `SMTP_FROM` | `noreply@liquifact.com` | Sender email address. |
+| `SMTP_MAX_RETRIES` | `3` | Maximum delivery attempts for transient failures. Clamped to 1–10. |
 
-When `SMTP_HOST` is unset, the system runs in **dry-run** mode (logs to console instead of sending real emails), which is ideal for local development and CI testing.
+When `SMTP_HOST` is unset, the system runs in **dry-run** mode: emails are logged to the console instead of being sent, ideal for local development and CI.
 
 #### Metrics
 
 Three Prometheus counters track reminder delivery:
 
 ```
-maturity_reminder_delivery_attempts_total{job_type="maturity_reminder"}    # Each attempt (including retries)
-maturity_reminder_delivery_success_total{job_type="maturity_reminder"}     # Successful deliveries
-maturity_reminder_dead_letter_total{job_type,reason}                       # Dead-lettered reminders
-  ├─ reason="permanent_error"      # Permanent SMTP failures (5xx)
-  └─ reason="max_retries_exceeded" # Exhausted all transient retries
+maturity_reminder_delivery_attempts_total{job_type,reason}   # Every attempt, including retries
+maturity_reminder_delivery_success_total{job_type}           # Confirmed successful deliveries
+maturity_reminder_dead_letter_total{job_type,reason}         # Dead-lettered reminders
+  ├─ reason="smtp_timeout"         # Network / connection timeout
+  ├─ reason="smtp_reject"          # SMTP 5xx / permanent rejection
+  ├─ reason="template_error"       # Template rendering failure
+  └─ reason="unknown"              # Unmapped failure
 ```
 
-See [`docs/email-ops.md`](./docs/email-ops.md) for full technical details on retry logic, error classification, and dead-letter queue management.
+#### Security notes
+
+- SMTP credentials (`SMTP_USER`, `SMTP_PASS`) are never written to any log line.
+- Recipient email addresses are not stored in dead-letter records or Prometheus labels.
+- The `attempts` bound (1–10) prevents unbounded retry loops.
+- The dead-letter persistence call is fire-and-forget; a database outage cannot stall reminder delivery.
+
+See [`docs/email-ops.md`](./docs/email-ops.md) for full technical details on retry logic, error classification, dead-letter column schema, and PromQL alert examples.
 
 ---
 
