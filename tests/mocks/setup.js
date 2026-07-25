@@ -285,6 +285,8 @@ jest.mock('../../src/middleware/rateLimit', () => {
     apiKeyLimiter: noopMiddleware,
     adminConfigLimiter: noopMiddleware,
     createConfigRateLimiter: jest.fn(() => noopMiddleware),
+    metricsLimiter: noopMiddleware,
+    createMetricsRateLimiter: jest.fn(() => noopMiddleware),
     createRateLimiter: jest.fn(() => noopMiddleware),
     parseRateLimitEnv: jest.fn((_, def) => def),
     keyGenerator: jest.fn((req) => req.ip || '127.0.0.1'),

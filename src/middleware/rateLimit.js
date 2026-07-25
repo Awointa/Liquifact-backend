@@ -171,6 +171,13 @@ const API_KEY_MAX = parseRateLimitEnv('RATE_LIMIT_API_KEY_MAX', 1000);
 const CONFIG_RATE_LIMIT_WINDOW_MS = parseRateLimitEnv('CONFIG_RATE_LIMIT_WINDOW_MS', 60 * 1000);
 const CONFIG_RATE_LIMIT_MAX = parseRateLimitEnv('CONFIG_RATE_LIMIT_MAX', 20);
 
+// Issue #744 — metrics-endpoint rate limiter. Defaults target the Prometheus
+// scrape reality: a 60 s window with 30 requests per client lets a typical
+// 15-30 s scrape interval work comfortably while still shutting down
+// accidental tight loops or abusive reloads within one scrape cycle.
+const METRICS_RATE_LIMIT_WINDOW_MS = parseRateLimitEnv('METRICS_RATE_LIMIT_WINDOW_MS', 60 * 1000);
+const METRICS_RATE_LIMIT_MAX = parseRateLimitEnv('METRICS_RATE_LIMIT_MAX', 30);
+
 /**
  * Standard global rate limiter for all API endpoints.
  * Limits each IP/API key to configured requests per window.
@@ -353,6 +360,94 @@ function createConfigRateLimiter() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Metrics-endpoint rate limiter (issue #744)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * 429 response body for {@link metricsLimiter}.
+ *
+ * Emits the canonical RFC 7807 extensions consistent with the rest of
+ * the platform's problem+json responses. Uses the same wire format as
+ * {@link adminConfigHandler} with `scope: 'metrics'`.
+ *
+ * @param {import('express').Request} _req - Express request (unused).
+ * @param {import('express').Response} res - Express response.
+ * @param {import('express').NextFunction} _next - Express next (unused).
+ * @param {{ statusCode: number, windowMs: number }} options - RateLimit options.
+ * @returns {void}
+ */
+function metricsRateLimitHandler(_req, res, _next, options) {
+  res.status(options.statusCode).json({
+    type: 'https://liquifact.com/probs/too-many-requests',
+    title: 'Too Many Requests',
+    status: options.statusCode,
+    code: 'RATE_LIMITED',
+    retryable: true,
+    retry_hint: 'Wait for the rate-limit window to reset before retrying.',
+    scope: 'metrics',
+    error: 'Too many requests.',
+    message: 'Rate limit threshold breached for /metrics. Please try again later.',
+  });
+}
+
+/**
+ * Per-client rate limiter for /metrics (issue #744).
+ *
+ * Each client — identified by X-API-Key when present, otherwise by socket IP —
+ * is allotted a configurable per-window budget. The window and cap are
+ * env-driven so operators can tune the limit without a code change.
+ *
+ * Reuses {@link adminConfigKeyGenerator} for the per-client key strategy
+ * (API key → IP → 127.0.0.1) so the fallback chain stays consistent across
+ * all scoped limiters.
+ *
+ * The limiter is mounted in `src/app.js` BEFORE `metricsAuth` so that
+ * unauthenticated attempts still consume quota — defending against
+ * brute-force token guessing on the metrics surface.
+ *
+ * Env vars:
+ *   - `METRICS_RATE_LIMIT_WINDOW_MS` (default 60 000)
+ *   - `METRICS_RATE_LIMIT_MAX`       (default 30)
+ *
+ * @type {import('express').RequestHandler}
+ */
+const metricsLimiter = rateLimit({
+  windowMs: METRICS_RATE_LIMIT_WINDOW_MS,
+  limit: METRICS_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: resolveRateLimitStore('metrics'),
+  keyGenerator: adminConfigKeyGenerator,
+  validate: {
+    xForwardedForHeader: false,
+  },
+  handler: metricsRateLimitHandler,
+});
+
+/**
+ * Factory variant of {@link metricsLimiter} for callers (mostly tests)
+ * that need to construct a fresh limiter with different bounds. Production
+ * code should mount `metricsLimiter` directly so the Redis/console.warn
+ * handshake runs once at module load.
+ *
+ * @returns {import('express').RequestHandler}
+ */
+function createMetricsRateLimiter() {
+  return rateLimit({
+    windowMs: METRICS_RATE_LIMIT_WINDOW_MS,
+    limit: METRICS_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: resolveRateLimitStore('metrics'),
+    keyGenerator: adminConfigKeyGenerator,
+    validate: {
+      xForwardedForHeader: false,
+    },
+    handler: metricsRateLimitHandler,
+  });
+}
+
 module.exports = {
   createRateLimiter,
   globalLimiter,
@@ -368,4 +463,9 @@ module.exports = {
   getApiKey,
   CONFIG_RATE_LIMIT_WINDOW_MS,
   CONFIG_RATE_LIMIT_MAX,
+  METRICS_RATE_LIMIT_WINDOW_MS,
+  METRICS_RATE_LIMIT_MAX,
+  metricsLimiter,
+  metricsRateLimitHandler,
+  createMetricsRateLimiter,
 };

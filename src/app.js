@@ -44,6 +44,7 @@ const { validateHealthQuery, rejectBodyOnGet } = require('./schemas/health');
 const responseHelper = require('./utils/responseHelper');
 const logger = require('./logger');
 const { metricsAuth, metricsHandler } = require('./metrics');
+const { metricsLimiter } = require('./middleware/rateLimit');
 const smeRoutes = require('./routes/sme');
 const invoiceFileRoutes = require('./routes/invoiceFile');
 const auditTrailRoutes = require('./routes/auditTrail');
@@ -395,7 +396,10 @@ function createApp() {
   assertNoDuplicateRouterMounts();
 
   // ── 6. Prometheus metrics ────────────────────────────────────────────────
-  app.get('/metrics', metricsAuth, metricsHandler);
+  // Rate limiter mounted BEFORE metricsAuth so unauthenticated attempts
+  // still consume quota — defending against brute-force token guessing
+  // on the metrics surface (issue #744).
+  app.get('/metrics', metricsLimiter, metricsAuth, metricsHandler);
 
   // ── 7. 404 catch-all ─────────────────────────────────────────────────────
   app.use((req, res) => {
