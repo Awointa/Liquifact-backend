@@ -44,7 +44,7 @@ const { validateHealthQuery, rejectBodyOnGet } = require('./schemas/health');
 const responseHelper = require('./utils/responseHelper');
 const logger = require('./logger');
 const { metricsAuth, metricsHandler } = require('./metrics');
-const { metricsLimiter } = require('./middleware/rateLimit');
+const { instrumentHealth } = require('./middleware/healthMetrics');
 const smeRoutes = require('./routes/sme');
 const invoiceFileRoutes = require('./routes/invoiceFile');
 const auditTrailRoutes = require('./routes/auditTrail');
@@ -165,27 +165,27 @@ function createApp() {
   // before it reaches the dependency checks.
 
   // Liveness probe — no external dependencies
-  app.get('/health', healthLimiter, rejectBodyOnGet, validateHealthQuery, (req, res) => {
+  app.get('/health', rejectBodyOnGet, validateHealthQuery, instrumentHealth('health_liveness', (req, res) => {
     res.json({
       status: 'ok',
       service: 'liquifact-api',
       version: '0.1.0',
       timestamp: new Date().toISOString(),
     });
-  });
+  }));
 
   // Liveness alias (Kubernetes convention)
-  app.get('/healthz', healthLimiter, rejectBodyOnGet, validateHealthQuery, (req, res) => {
+  app.get('/healthz', rejectBodyOnGet, validateHealthQuery, instrumentHealth('health_liveness', (req, res) => {
     res.json({
       status: 'ok',
       service: 'liquifact-api',
       version: '0.1.0',
       timestamp: new Date().toISOString(),
     });
-  });
+  }));
 
   // Full health check (all dependencies)
-  app.get('/ready', healthLimiter, rejectBodyOnGet, validateHealthQuery, async (req, res) => {
+  app.get('/ready', rejectBodyOnGet, validateHealthQuery, instrumentHealth('health_full', async (req, res) => {
     try {
       const { healthy, checks } = await performHealthChecks();
       const status = healthy ? 200 : 503;
@@ -204,10 +204,10 @@ function createApp() {
         error: error.message,
       });
     }
-  });
+  }));
 
   // Readiness probe (critical deps only: DB, Soroban RPC)
-  app.get('/readyz', healthLimiter, rejectBodyOnGet, validateHealthQuery, async (req, res) => {
+  app.get('/readyz', rejectBodyOnGet, validateHealthQuery, instrumentHealth('health_readiness', async (req, res) => {
     try {
       const { healthy, checks } = await performReadinessChecks();
       const status = healthy ? 200 : 503;
@@ -226,7 +226,7 @@ function createApp() {
         error: error.message,
       });
     }
-  });
+  }));
 
   // API info
   app.get('/api', (req, res) => {
