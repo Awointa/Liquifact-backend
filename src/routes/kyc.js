@@ -4,6 +4,8 @@ const express = require('express');
 const { verifySignature } = require('../services/webhooks');
 const kycService = require('../services/kycService');
 const logger = require('../logger');
+const { authenticateToken } = require('../middleware/auth');
+const { extractTenant } = require('../middleware/tenant');
 
 const router = express.Router();
 
@@ -103,7 +105,7 @@ function parseJsonPayload(rawBody) {
  *                 error:
  *                   type: string
  */
-router.post('/webhook', async (req, res) => {
+router.post('/webhook', authenticateToken, extractTenant, async (req, res) => {
   const config = kycService.getKycProviderConfig();
   const secret = config.apiSecret;
   const signatureHeader = req.header('X-Signature');
@@ -135,6 +137,16 @@ router.post('/webhook', async (req, res) => {
   const status = payload.status || payload.kycStatus || payload.kyc_status;
   const providerRecordId = payload.recordId || payload.providerRecordId || payload.provider_record_id || null;
   const verifiedAt = payload.verifiedAt || payload.verified_at || null;
+  const payloadTenantId = payload.tenantId || payload.tenant_id || null;
+  const requestTenantId = req.tenantId;
+
+  if (payloadTenantId && requestTenantId && payloadTenantId !== requestTenantId) {
+    return res.status(403).json({ error: 'Tenant scope mismatch.' });
+  }
+
+  if (payloadTenantId && !requestTenantId) {
+    return res.status(400).json({ error: 'Missing tenant context.' });
+  }
 
   if (!smeId || typeof smeId !== 'string') {
     return res.status(400).json({ error: 'Missing or invalid smeId' });
