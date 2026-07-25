@@ -34,6 +34,8 @@ const {
   CONFIG_SECTIONS,
 } = require('../schemas/config');
 const { adminConfigLimiter } = require('../middleware/rateLimit');
+const idempotencyMiddleware = require('../middleware/idempotency');
+const { reloadCorsOrigins, reloadCorsMaxAge } = require('../config/cors');
 const logger = require('../logger');
 
 const router = express.Router();
@@ -66,6 +68,10 @@ router.use(...adminStack);
  *       A machine-readable `fieldErrors` map is returned on any validation
  *       failure so that clients can highlight the offending fields.
  *
+ *       **Idempotency**: Requires an `Idempotency-Key` header. Retried
+ *       requests with the same key and body return the original cached
+ *       response; reusing a key with a different body returns 409.
+ *
  *       **Access**: Admin-only (JWT bearer or API key). Tenant-scoped.
  *       **Rate limit (issue #754)**: per client (API key / IP); default 20
  *       requests per 60 s window. Returns `429` with a `Retry-After` header
@@ -74,6 +80,14 @@ router.use(...adminStack);
  *     tags: [AdminConfig]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: header
+ *         name: Idempotency-Key
+ *         required: true
+ *         schema:
+ *           type: string
+ *           pattern: '^[A-Za-z0-9._:-]{8,128}$'
+ *         description: Unique idempotency key for this config update. Safe to retry with the same key.
  *     requestBody:
  *       required: true
  *       content:
@@ -84,7 +98,7 @@ router.use(...adminStack);
  *             properties:
  *               section:
  *                 type: string
- *                 enum: [webhook, reconciliation, kyc, retention, fraudThresholds]
+ *                 enum: [webhook, reconciliation, kyc, retention, fraudThresholds, cors]
  *                 description: The configuration section to update.
  *               config:
  *                 type: object
@@ -104,7 +118,7 @@ router.use(...adminStack);
  *                 message:
  *                   type: string
  *       400:
- *         description: Validation error — body contains invalid or missing fields.
+ *         description: Validation error — body contains invalid or missing fields, or missing/malformed Idempotency-Key.
  *         content:
  *           application/problem+json:
  *             schema:
@@ -122,6 +136,18 @@ router.use(...adminStack);
  *         $ref: '#/components/responses/Problem401'
  *       403:
  *         $ref: '#/components/responses/Problem403'
+ *       409:
+ *         description: Idempotency key reused with a different request body.
+ *         content:
+ *           application/problem+json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 type:    { type: string }
+ *                 title:   { type: string }
+ *                 status:  { type: integer }
+ *                 detail:  { type: string }
+ *                 requestId: { type: string }
  *       429:
  *         description: Rate limit exceeded (issue #754) — see Retry-After header.
  *         headers:
@@ -144,9 +170,22 @@ router.use(...adminStack);
  *                 error:   { type: string }
  *                 message: { type: string }
  */
-router.post('/', validateBody(runtimeConfigSchema), (req, res) => {
+router.post('/', idempotencyMiddleware, validateBody(runtimeConfigSchema), (req, res) => {
   // validateBody attaches the parsed, coerced payload to req.validated
   const { section, config: validatedConfig } = req.validated;
+
+  // Apply runtime configuration changes for supported sections.
+  if (section === 'cors') {
+    if (validatedConfig.origins) {
+      // Update the env var so reloadCorsOrigins can re-read it.
+      process.env.CORS_ALLOWED_ORIGINS = validatedConfig.origins.join(',');
+      reloadCorsOrigins();
+    }
+    if (validatedConfig.maxAge !== undefined) {
+      process.env.CORS_MAX_AGE = String(validatedConfig.maxAge);
+      reloadCorsMaxAge();
+    }
+  }
 
   logger.info(
     {

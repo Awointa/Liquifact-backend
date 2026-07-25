@@ -393,6 +393,26 @@ function reloadCorsOrigins() {
   allowedOrigins = getAllowedOriginsFromEnv();
 }
 
+/**
+ * Reloads the CORS preflight max-age from process.env.CORS_MAX_AGE and
+ * returns the new value. Call this after updating CORS_MAX_AGE at runtime.
+ *
+ * @returns {number} Updated max-age in seconds.
+ */
+function reloadCorsMaxAge() {
+  maxAge = parseMaxAge(process.env.CORS_MAX_AGE);
+  return maxAge;
+}
+
+/**
+ * Validates that `origin` (if present) is in the provided allowlist.
+ * Returns `true` when the origin is absent (non-browser client) or present
+ * in the allowlist.
+ *
+ * @param {string|undefined} origin - Incoming request origin header.
+ * @param {string[]} allowlist - Array of allowed origin strings.
+ * @returns {boolean}
+ */
 function validateCorsOrigin(origin, allowlist) {
   if (origin === undefined) {
     return true;
@@ -515,6 +535,7 @@ module.exports = {
   normalizeOrigin,
   parseAllowedOrigins,
   parseMaxAge,
+  reloadCorsMaxAge,
   reloadCorsOrigins,
   resolveAllowlist,
   validateCorsOrigin,
