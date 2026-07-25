@@ -3,6 +3,7 @@
 const db = require('../db/knex');
 const logger = require('../logger');
 const { resolveInvoiceByAddress } = require('../config/escrowMap');
+const { escrowReadCache } = require('../services/escrowReadCache');
 const {
   escrowIndexerEventsProcessedTotal,
   escrowIndexerEventsSkippedTotal,
@@ -14,6 +15,12 @@ const { StrKey } = require('@stellar/stellar-sdk');
 const { indexerEventSchema } = require('../schemas/indexerEvent');
 
 class ValidationError extends Error {
+  /**
+   * Creates an indexer event validation error.
+   * @param {string} message Human-readable failure.
+   * @param {string} code Stable error code.
+   * @param {object|null} details Validation details.
+   */
   constructor(message, code, details = null) {
     super(message);
     this.name = 'ValidationError';
@@ -300,6 +307,8 @@ async function persistEscrowEvent({ store, transactionRunner }, rawEvent) {
     }
   });
 
+  // Projection writes supersede any process-local response cached for this invoice.
+  escrowReadCache.invalidate(event.invoiceId);
   return event;
 }
 
