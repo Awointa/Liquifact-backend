@@ -144,6 +144,15 @@ describe('SME Metrics API', () => {
     expect(res.body.data.open).toBe(1); // Only User A's invoice is counted
   });
 
+  test('GET /api/sme/metrics - Rejects cross-tenant read attempt via x-tenant-id header (403)', async () => {
+    const res = await request(app)
+      .get('/api/sme/metrics')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-tenant-id', 'some_other_tenant');
+
+    expect(res.status).toBe(403);
+  });
+
   test('GET /api/sme/metrics - Rejects unauthorized requests', async () => {
     const res = await request(app).get('/api/sme/metrics');
     expect(res.status).toBe(401);
@@ -309,8 +318,7 @@ describe('SME Metrics API', () => {
         .set('Authorization', `Bearer ${token}`);
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Bad Request');
-      expect(res.body.message).toContain('Malformed cursor');
+      expect(res.body.error.code).toBe('BAD_REQUEST');
     });
 
     test('pagination respects tenant isolation', async () => {
