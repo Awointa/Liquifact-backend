@@ -114,16 +114,17 @@ Cache store errors are caught and logged; they never block the request.
 ---
 
 ## Observability
+## Sentry Observability
 
-Optional Sentry error tracking is supported through the `SENTRY_DSN` environment variable. When enabled, the server scrubs sensitive values before sending events, including:
+The backend uses Sentry for error tracking with enhanced security scrubbing:
 
-- Invoice payload bodies and invoice-related fields
-- Authorization headers and bearer tokens
-- JWT claims (issuer, audience) and algorithms
-- API keys and secret values
-- Stellar XDR / Stellar-specific payloads
+- Recursive deep scrubbing for nested objects
+- Redaction of sensitive fields (password, token, api-key, etc.)
+- URL and query string scrubbing to prevent PII leakage
+- Bounded recursion to prevent DoS attacks
 
-### Prometheus metrics endpoint (`GET /metrics`)
+See `src/observability/sentry.js` for implementation details.
+
 
 The `/metrics` endpoint exposes Prometheus-formatted metrics via a dedicated route handler at `GET /metrics`. It is **never** served to unauthenticated or non-loopback clients.
 

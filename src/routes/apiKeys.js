@@ -1,131 +1,97 @@
 /**
- * Lightweight API-keys route handlers for testing and integration coverage.
+ * API Keys listing endpoint with cursor-based pagination.
  *
- * These handlers expose a small endpoint family for inspecting and creating
- * API-key entries sourced from the existing environment-backed registry.
+ * GET /v1/api-keys
+ * Query params:
+ *   limit   {number}  items per page (default 20, max 100)
+ *   cursor  {string}  opaque cursor from previous page
  *
- * @module routes/apiKeys
+ * Response:
+ *   {
+ *     data: ApiKeyEntry[],
+ *     nextCursor: string | null
+ *   }
  */
 
 'use strict';
 
 const express = require('express');
-const { loadApiKeyRegistry, validateEntry } = require('../config/apiKeys');
-const idempotencyMiddleware = require('../middleware/idempotency');
+const { loadApiKeyRegistry } = require('../config/apiKeys');
 
 const router = express.Router();
-const runtimeEntries = new Map();
 
-function cloneEntry(entry) {
-  return {
-    key: entry.key,
-    clientId: entry.clientId,
-    scopes: [...entry.scopes],
-    revoked: Boolean(entry.revoked),
-  };
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 100;
+
+/**
+ * Encode a simple opaque cursor from the last key string.
+ * @param {string} key
+ * @returns {string}
+ */
+function encodeCursor(key) {
+  return Buffer.from(key).toString('base64');
 }
 
-function buildEntries(env = process.env) {
-  const merged = new Map();
-
-  for (const [key, entry] of loadApiKeyRegistry(env)) {
-    merged.set(key, cloneEntry(entry));
-  }
-
-  for (const [key, entry] of runtimeEntries) {
-    merged.set(key, cloneEntry(entry));
-  }
-
-  return Array.from(merged.values()).sort((a, b) => a.key.localeCompare(b.key));
-}
-
-function getEntryByKey(key, env = process.env) {
-  return buildEntries(env).find((entry) => entry.key === key);
-}
-
-function parseValidationErrors(error) {
-  const details = [];
-
-  if (error && Array.isArray(error.issues)) {
-    for (const issue of error.issues) {
-      details.push({
-        field: issue.path && issue.path.length ? issue.path[0] : 'body',
-        message: issue.message,
-      });
-    }
-  }
-
-  if (details.length === 0) {
-    details.push({ field: 'body', message: error.message || 'Invalid request body.' });
-  }
-
-  return details;
-}
-
-function createApiKeyHandler(req, res) {
+/**
+ * Decode the opaque cursor back to the key string.
+ * @param {string} cursor
+ * @returns {string | null}
+ */
+function decodeCursor(cursor) {
   try {
-    const entry = validateEntry(req.body, 0);
-    const existing = getEntryByKey(entry.key, req.app.locals?.env || process.env);
+    return Buffer.from(cursor, 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+}
 
-    if (existing) {
-      return res.status(200).json({
-        data: existing,
-        message: 'API key already exists.',
-        idempotent: true,
-      });
+/**
+ * GET /api-keys
+ * Returns a paginated list of registered API keys.
+ */
+router.get('/', (req, res) => {
+  // Parse and clamp limit
+  let limit = parseInt(req.query.limit, 10);
+  if (Number.isNaN(limit) || limit < 1) {
+    limit = DEFAULT_LIMIT;
+  }
+  if (limit > MAX_LIMIT) {
+    limit = MAX_LIMIT;
+  }
+
+  // Load all keys from the registry
+  const registry = loadApiKeyRegistry();
+  const allEntries = Array.from(registry.values());
+
+  // Apply cursor if provided
+  let startIndex = 0;
+  if (req.query.cursor) {
+    const decoded = decodeCursor(req.query.cursor);
+    if (!decoded) {
+      return res.status(400).json({ error: 'Invalid cursor' });
     }
 
-    runtimeEntries.set(entry.key, entry);
-
-    return res.status(201).json({
-      data: entry,
-      message: 'API key created successfully.',
-    });
-  } catch (error) {
-    return res.status(422).json({
-      error: 'Validation failed.',
-      code: 'VALIDATION_ERROR',
-      details: parseValidationErrors(error),
-    });
-  }
-}
-
-function listApiKeysHandler(req, res) {
-  const entries = buildEntries(req.app.locals?.env || process.env);
-
-  return res.status(200).json({
-    data: entries,
-    count: entries.length,
-    message: 'API keys retrieved successfully.',
-  });
-}
-
-function getApiKeyHandler(req, res) {
-  const entry = getEntryByKey(req.params.key, req.app.locals?.env || process.env);
-
-  if (!entry) {
-    return res.status(404).json({
-      error: 'API key not found.',
-      code: 'NOT_FOUND',
-    });
+    const foundIndex = allEntries.findIndex((entry) => entry.key === decoded);
+    if (foundIndex === -1) {
+      return res.status(400).json({ error: 'Invalid cursor' });
+    }
+    startIndex = foundIndex + 1; // start after the cursor item
   }
 
-  return res.status(200).json({
-    data: entry,
-    message: 'API key retrieved successfully.',
+  // Slice the page
+  const page = allEntries.slice(startIndex, startIndex + limit);
+
+  // Determine next cursor
+  let nextCursor = null;
+  if (startIndex + limit < allEntries.length) {
+    const lastItem = page[page.length - 1];
+    nextCursor = encodeCursor(lastItem.key);
+  }
+
+  return res.json({
+    data: page,
+    nextCursor,
   });
-}
-
-router.get('/api-keys', listApiKeysHandler);
-router.post('/api-keys', idempotencyMiddleware, createApiKeyHandler);
-router.get('/api-keys/:key', getApiKeyHandler);
-
-router.get('/keys', listApiKeysHandler);
-router.post('/keys', idempotencyMiddleware, createApiKeyHandler);
-router.get('/keys/:key', getApiKeyHandler);
-
-router.resetRuntimeEntries = () => {
-  runtimeEntries.clear();
-};
+});
 
 module.exports = router;
