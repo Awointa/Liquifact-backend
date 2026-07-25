@@ -1449,6 +1449,26 @@ const healthRequestErrorsTotal = new client.Counter({
   registers: [registry],
 });
 
+const escrowReadCacheHitsTotal = new client.Counter({
+  name: 'escrow_read_cache_hits_total',
+  help: 'Total escrow read cache hits',
+  registers: [registry],
+});
+
+const escrowReadCacheMissesTotal = new client.Counter({
+  name: 'escrow_read_cache_misses_total',
+  help: 'Total escrow read cache misses',
+  registers: [registry],
+});
+
+const escrowReadCacheEvictionsTotal = new client.Counter({
+  name: 'escrow_read_cache_evictions_total',
+  help: 'Total escrow read cache evictions',
+  labelNames: ['reason'],
+  registers: [registry],
+});
+
+
 /**
  * Returns the shared Prometheus registry.
  *
@@ -1499,6 +1519,17 @@ module.exports = {
   idempotencyStorageFailureTotal,
   cacheStoreErrorsTotal,
   redisCacheFailOpenTotal,
+  escrowReadCacheHitsTotal,
+  escrowReadCacheMissesTotal,
+  escrowReadCacheEvictionsTotal,
+  persistenceRequestDurationSeconds,
+  persistenceRequestsTotal,
+  persistenceRequestErrorsTotal,
+  PERSISTENCE_STATUS_CLASS_ENUM,
+  PERSISTENCE_CAUSE_ENUM,
+  normalizePersistenceEndpoint,
+  normalizePersistenceStatusClass,
+  normalizePersistenceCause,
   sorobanCircuitBreakerStateTransitionsTotal,
   kycWebhookRequestDurationSeconds,
   kycWebhookRequestsTotal,

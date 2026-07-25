@@ -26,6 +26,7 @@ const { requireKycForFunding } = require('../middleware/kycGating');
 const { legalHoldGate } = require('../middleware/legalHoldGate');
 const { resolveEscrowAddress, EscrowNotFoundError } = require('../config/escrowMap');
 const { submitFundEscrow, EscrowSubmitError } = require('../services/escrowSubmit');
+const { invalidateEscrowReadCache } = require('../services/escrowRead');
 const {
   persistCommitment,
   normalizeAmountStroopsInput,
@@ -294,6 +295,9 @@ router.post(
       ledger: submitResult.ledger,
       idempotencyKey,
     });
+
+    // A successful escrow write makes any previously cached read stale.
+    await invalidateEscrowReadCache(invoiceId);
 
     // 7. Return real status — never return internal detail fields like idempotencyKey
     return res.status(200).json({
