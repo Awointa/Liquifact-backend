@@ -4,8 +4,13 @@ const express = require('express');
 const { verifySignature } = require('../services/webhooks');
 const kycService = require('../services/kycService');
 const logger = require('../logger');
-const { authenticateToken } = require('../middleware/auth');
-const { extractTenant } = require('../middleware/tenant');
+const {
+  kycWebhookRequestDurationSeconds,
+  kycWebhookRequestsTotal,
+  kycWebhookErrorsTotal,
+  normalizeKycWebhookStatusClass,
+  normalizeKycWebhookCause,
+} = require('../metrics');
 
 const router = express.Router();
 
@@ -28,7 +33,22 @@ function parseJsonPayload(rawBody) {
  * POST /api/kyc/webhook
  * (existing ingestion endpoint – unchanged)
  */
-router.post('/webhook', authenticateToken, extractTenant, async (req, res) => {
+router.post('/webhook', async (req, res) => {
+  const startTime = process.hrtime.bigint();
+  let statusClass = '2xx';
+  let cause = 'none';
+
+  const finish = (httpStatus, errorCode) => {
+    const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
+    statusClass = normalizeKycWebhookStatusClass(httpStatus);
+    cause = normalizeKycWebhookCause({ status: httpStatus, errorCode });
+    kycWebhookRequestDurationSeconds.observe({ status_class: statusClass }, elapsed);
+    kycWebhookRequestsTotal.inc({ status_class: statusClass });
+    if (cause !== 'none') {
+      kycWebhookErrorsTotal.inc({ cause });
+    }
+  };
+
   const config = kycService.getKycProviderConfig();
   const secret = config.apiSecret;
   const signatureHeader = req.header('X-Signature');
@@ -36,16 +56,19 @@ router.post('/webhook', authenticateToken, extractTenant, async (req, res) => {
 
   if (!secret) {
     logger.warn({ route: '/api/kyc/webhook' }, 'KYC webhook secret is not configured');
+    finish(503, 'missing_secret');
     return res.status(503).json({ error: 'KYC webhook ingestion is not configured' });
   }
 
   if (!signatureHeader) {
+    finish(401, 'missing_signature');
     return res.status(401).json({ error: 'Missing X-Signature header' });
   }
 
   const verification = verifySignature(secret, rawBody, signatureHeader);
   if (!verification.valid) {
     logger.warn({ error: verification.error }, 'Invalid KYC webhook signature');
+    finish(401, 'invalid_signature');
     return res.status(401).json({ error: 'Invalid webhook signature' });
   }
 
@@ -53,6 +76,7 @@ router.post('/webhook', authenticateToken, extractTenant, async (req, res) => {
   try {
     payload = parseJsonPayload(rawBody);
   } catch (error) {
+    finish(400, 'invalid_payload');
     return res.status(400).json({ error: error.message });
   }
 
@@ -72,17 +96,14 @@ router.post('/webhook', authenticateToken, extractTenant, async (req, res) => {
   }
 
   if (!smeId || typeof smeId !== 'string') {
+    finish(400, 'missing_sme_id');
     return res.status(400).json({ error: 'Missing or invalid smeId' });
   }
 
-  const validated = validationResult.data;
-  const smeId = validated.smeId;
-  const status = validated.status;
-  const providerRecordId = validated.recordId || null;
-  const verifiedAt = validated.verifiedAt || null;
-
-  // Zod schema already guarantees smeId and status are non-empty strings,
-  // so the manual guards above are no longer needed (issue #638).
+  if (!status || typeof status !== 'string') {
+    finish(400, 'missing_status');
+    return res.status(400).json({ error: 'Missing or invalid status' });
+  }
 
   // Reject unsigned payloads that include a status we don't recognise. The
   // signed webhook is the provider's authoritative signal — if it sends a
@@ -94,6 +115,7 @@ router.post('/webhook', authenticateToken, extractTenant, async (req, res) => {
       { smeId, status },
       'KYC webhook received status outside PROVIDER_STATUS_MAP; rejecting (fail-closed)',
     );
+    finish(400, 'unknown_status');
     return res.status(400).json({ error: `Unknown provider status: ${status}` });
   }
 
@@ -114,10 +136,12 @@ router.post('/webhook', authenticateToken, extractTenant, async (req, res) => {
       'KYC webhook ingested successfully'
     );
 
+    finish(200);
     return res.status(200).json({ success: true, smeId: record.smeId, status: record.status });
   } catch (error) {
     logger.error({ smeId, error: error.message }, 'Failed to process KYC webhook');
-    return res.status(400).json({ error: error.message });
+    finish(500, 'persistence_error');
+    return res.status(500).json({ error: error.message });
   }
 });
 

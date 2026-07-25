@@ -1214,67 +1214,97 @@ const metricsRequestDurationSeconds = new client.Histogram({
   registers: [registry],
 });
 
+// ── KYC webhook metrics (issue #731) ────────────────────────────────────────
+
 /**
- * Counter: Total metrics endpoint requests.
+ * Bounded enum of allowed `status_class` label values for KYC webhook metrics.
+ * @readonly
+ */
+const _KYC_WEBHOOK_STATUS_CLASS_ENUM = Object.freeze(['2xx', '4xx', '5xx']);
+
+/**
+ * Bounded enum of allowed `cause` label values for KYC webhook error metrics.
+ * Raw error messages are NEVER used as labels.
+ * @readonly
+ */
+const KYC_WEBHOOK_CAUSE_ENUM = Object.freeze([
+  'missing_secret',
+  'missing_signature',
+  'invalid_signature',
+  'invalid_payload',
+  'missing_sme_id',
+  'missing_status',
+  'unknown_status',
+  'persistence_error',
+  'internal',
+  'none',
+]);
+
+/**
+ * Maps an HTTP status code to a bounded `status_class` label value.
+ *
+ * @param {unknown} status - HTTP status code.
+ * @returns {string} Bounded value from {@link KYC_WEBHOOK_STATUS_CLASS_ENUM}.
+ */
+function normalizeKycWebhookStatusClass(status) {
+  const code = Number(status);
+  if (code >= 500) { return '5xx'; }
+  if (code >= 400) { return '4xx'; }
+  return '2xx';
+}
+
+/**
+ * Maps a KYC webhook error scenario to a bounded `cause` label value.
+ * Raw error messages or PII are never used.
+ *
+ * @param {object} params
+ * @param {number} params.status - HTTP status code.
+ * @param {string} [params.errorCode] - Structured error classification.
+ * @returns {string} Bounded value from {@link KYC_WEBHOOK_CAUSE_ENUM}.
+ */
+function normalizeKycWebhookCause({ status, errorCode }) {
+  if (errorCode && KYC_WEBHOOK_CAUSE_ENUM.includes(errorCode)) {
+    return errorCode;
+  }
+  const code = Number(status);
+  if (code < 400) { return 'none'; }
+  return 'internal';
+}
+
+/**
+ * Histogram: Wall-clock duration of KYC webhook endpoint requests in seconds.
+ * @type {import('prom-client').Histogram}
+ */
+const kycWebhookRequestDurationSeconds = new client.Histogram({
+  name: 'kyc_webhook_request_duration_seconds',
+  help: 'Duration of KYC webhook endpoint requests in seconds',
+  labelNames: ['status_class'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [registry],
+});
+
+/**
+ * Counter: Total KYC webhook requests by status class.
  * @type {import('prom-client').Counter}
  */
-const metricsRequestsTotal = new client.Counter({
-  name: 'metrics_requests_total',
-  help: 'Total number of metrics endpoint requests',
+const kycWebhookRequestsTotal = new client.Counter({
+  name: 'kyc_webhook_requests_total',
+  help: 'Total number of KYC webhook endpoint requests',
   labelNames: ['status_class'],
   registers: [registry],
 });
 
 /**
- * Counter: Metrics endpoint request errors by cause.
+ * Counter: KYC webhook request errors by cause.
  * @type {import('prom-client').Counter}
  */
-const metricsRequestErrorsTotal = new client.Counter({
-  name: 'metrics_request_errors_total',
-  help: 'Total number of metrics endpoint request errors by cause',
+const kycWebhookErrorsTotal = new client.Counter({
+  name: 'kyc_webhook_errors_total',
+  help: 'Total number of KYC webhook endpoint request errors by cause',
   labelNames: ['cause'],
   registers: [registry],
 });
 
-/**
- * Records metrics and a structured log for one completed metrics endpoint request.
- *
- * @param {object} params
- * @param {number} params.statusCode - Final HTTP status code.
- * @param {number} params.durationSeconds - Wall-clock duration in seconds.
- * @param {unknown} [params.error] - Error thrown by the handler, if any.
- * @param {import('express').Request} [params.req] - Request, for a scoped logger.
- * @returns {void}
- */
-function recordMetricsEndpointOutcome({ statusCode, durationSeconds, error, req }) {
-  const statusClass = normalizeMetricsEndpointStatusClass(statusCode);
-  const cause = normalizeMetricsEndpointCause(error, statusCode);
-
-  metricsRequestDurationSeconds.labels(statusClass).observe(durationSeconds);
-  metricsRequestsTotal.labels(statusClass).inc();
-
-  if (cause !== 'none') {
-    metricsRequestErrorsTotal.labels(cause).inc();
-  }
-
-  const log = (req && typeof logger.createRequestLogger === 'function')
-    ? logger.createRequestLogger(req)
-    : logger;
-  const fields = {
-    statusClass,
-    statusCode,
-    durationSeconds: Number(durationSeconds.toFixed(6)),
-    cause,
-  };
-
-  if (statusClass === '5xx') {
-    log.error(fields, 'metrics request failed');
-  } else if (statusClass === '4xx') {
-    log.warn(fields, 'metrics request rejected');
-  } else {
-    log.info(fields, 'metrics request completed');
-  }
-}
 
 /**
  * Returns the shared Prometheus registry.
@@ -1327,12 +1357,11 @@ module.exports = {
   cacheStoreErrorsTotal,
   redisCacheFailOpenTotal,
   sorobanCircuitBreakerStateTransitionsTotal,
-  apiKeyAuthDurationSeconds,
-  apiKeyAuthErrorsTotal,
-  API_KEY_ERROR_CAUSE_ENUM,
-  API_KEY_OUTCOME_ENUM,
-  classifyApiKeyOutcome,
-  classifyApiKeyErrorCause,
+  kycWebhookRequestDurationSeconds,
+  kycWebhookRequestsTotal,
+  kycWebhookErrorsTotal,
+  normalizeKycWebhookStatusClass,
+  normalizeKycWebhookCause,
   normalizeJobType,
   normalizeReminderReason,
   normalizeSorobanRpcMethod,

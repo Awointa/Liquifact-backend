@@ -1123,3 +1123,329 @@ describe('KYC webhook route', () => {
     expect(update).toHaveBeenCalled();
   });
 });
+
+// ── 18. KYC webhook metrics (issue #731) ────────────────────────────────────
+
+describe('KYC webhook metrics (issue #731)', () => {
+  let app;
+  let metrics;
+
+  beforeEach(() => {
+    app = require('express')();
+    app.use(require('express').raw({ type: 'application/json', limit: '100kb' }));
+    app.use('/api/kyc', kycRoutes);
+    metrics = require('../src/metrics');
+    metrics.kycWebhookRequestDurationSeconds.reset();
+    metrics.kycWebhookRequestsTotal.reset();
+    metrics.kycWebhookErrorsTotal.reset();
+  });
+
+  function getHashEntries(metric) {
+    return Object.values(metric.hashMap || {});
+  }
+
+  it('emits 2xx status class metric on successful webhook ingestion', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = {
+      smeId: 'sme-metric-01',
+      status: 'approved',
+      recordId: 'rec_metric_01',
+      verifiedAt: '2026-06-24T12:00:00.000Z',
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    db.mockImplementation(() => ({
+      where: jest.fn().mockReturnThis(),
+      first: jest.fn().mockResolvedValue(null),
+      insert: jest.fn().mockResolvedValue([1]),
+      update: jest.fn().mockResolvedValue(1),
+    }));
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(200);
+
+    const reqEntries = getHashEntries(metrics.kycWebhookRequestsTotal);
+    const req2xx = reqEntries.find((e) => e.labels.status_class === '2xx');
+    expect(req2xx).toBeDefined();
+    expect(req2xx.value).toBe(1);
+
+    const durationEntries = getHashEntries(metrics.kycWebhookRequestDurationSeconds);
+    const dur2xx = durationEntries.find((e) => e.labels && e.labels.status_class === '2xx');
+    expect(dur2xx).toBeDefined();
+  });
+
+  it('emits 4xx status class and missing_signature cause on missing X-Signature', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = { smeId: 'sme-metric-02', status: 'approved' };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .send(rawBody);
+
+    expect(res.status).toBe(401);
+
+    const reqEntries = getHashEntries(metrics.kycWebhookRequestsTotal);
+    const req4xx = reqEntries.find((e) => e.labels.status_class === '4xx');
+    expect(req4xx).toBeDefined();
+    expect(req4xx.value).toBe(1);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const errSig = errEntries.find((e) => e.labels.cause === 'missing_signature');
+    expect(errSig).toBeDefined();
+    expect(errSig.value).toBe(1);
+  });
+
+  it('emits 4xx status class and invalid_signature cause on bad signature', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = { smeId: 'sme-metric-03', status: 'approved' };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', 't=123,v1=deadbeef')
+      .send(rawBody);
+
+    expect(res.status).toBe(401);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const errSig = errEntries.find((e) => e.labels.cause === 'invalid_signature');
+    expect(errSig).toBeDefined();
+    expect(errSig.value).toBe(1);
+  });
+
+  it('emits 4xx and unknown_status cause for unrecognized provider status', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = { smeId: 'sme-metric-04', status: 'mystery_status' };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(400);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const errStatus = errEntries.find((e) => e.labels.cause === 'unknown_status');
+    expect(errStatus).toBeDefined();
+    expect(errStatus.value).toBe(1);
+  });
+
+  it('emits 5xx status class and missing_secret cause when KYC_PROVIDER_SECRET is absent', async () => {
+    delete process.env.KYC_PROVIDER_SECRET;
+
+    const payload = { smeId: 'sme-metric-05', status: 'approved' };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .send(rawBody);
+
+    expect(res.status).toBe(503);
+
+    const reqEntries = getHashEntries(metrics.kycWebhookRequestsTotal);
+    const req5xx = reqEntries.find((e) => e.labels.status_class === '5xx');
+    expect(req5xx).toBeDefined();
+    expect(req5xx.value).toBe(1);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const errSecret = errEntries.find((e) => e.labels.cause === 'missing_secret');
+    expect(errSecret).toBeDefined();
+    expect(errSecret.value).toBe(1);
+  });
+
+  it('emits 4xx and invalid_payload cause for malformed JSON body', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const rawBody = '{ invalid json';
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(400);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const errPayload = errEntries.find((e) => e.labels.cause === 'invalid_payload');
+    expect(errPayload).toBeDefined();
+    expect(errPayload.value).toBe(1);
+  });
+
+  it('emits 4xx and missing_sme_id cause when smeId is absent', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = { status: 'approved' };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Missing or invalid smeId/);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const errSme = errEntries.find((e) => e.labels.cause === 'missing_sme_id');
+    expect(errSme).toBeDefined();
+    expect(errSme.value).toBe(1);
+  });
+
+  it('emits 4xx and missing_status cause when status is absent', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = { smeId: 'sme-metric-07' };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Missing or invalid status/);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const errStatus = errEntries.find((e) => e.labels.cause === 'missing_status');
+    expect(errStatus).toBeDefined();
+    expect(errStatus.value).toBe(1);
+  });
+
+  it('emits 5xx and persistence_error cause when persistKycRecord throws', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = {
+      smeId: 'sme-metric-08',
+      status: 'approved',
+      recordId: 'rec_metric_08',
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    db.mockImplementation(() => ({
+      where: jest.fn().mockReturnThis(),
+      first: jest.fn().mockResolvedValue(null),
+      insert: jest.fn().mockRejectedValue(new Error('DB write failed')),
+      update: jest.fn().mockResolvedValue(1),
+    }));
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/DB write failed/);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const errPersist = errEntries.find((e) => e.labels.cause === 'persistence_error');
+    expect(errPersist).toBeDefined();
+    expect(errPersist.value).toBe(1);
+  });
+
+  it('no error metric is emitted for 2xx success responses', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = {
+      smeId: 'sme-metric-09',
+      status: 'approved',
+      recordId: 'rec_metric_09',
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    db.mockImplementation(() => ({
+      where: jest.fn().mockReturnThis(),
+      first: jest.fn().mockResolvedValue(null),
+      insert: jest.fn().mockResolvedValue([1]),
+      update: jest.fn().mockResolvedValue(1),
+    }));
+
+    await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    const errEntries = getHashEntries(metrics.kycWebhookErrorsTotal);
+    const noneValues = errEntries.filter((v) => v.labels.cause === 'none');
+    expect(noneValues.length).toBe(0);
+  });
+});
+
+// ── 19. KYC webhook metrics normalizers (issue #731) ────────────────────────
+
+describe('normalizeKycWebhookStatusClass (issue #731)', () => {
+  const { normalizeKycWebhookStatusClass } = require('../src/metrics');
+
+  it('returns 2xx for successful statuses', () => {
+    expect(normalizeKycWebhookStatusClass(200)).toBe('2xx');
+    expect(normalizeKycWebhookStatusClass(201)).toBe('2xx');
+  });
+
+  it('returns 4xx for client error statuses', () => {
+    expect(normalizeKycWebhookStatusClass(400)).toBe('4xx');
+    expect(normalizeKycWebhookStatusClass(401)).toBe('4xx');
+    expect(normalizeKycWebhookStatusClass(404)).toBe('4xx');
+  });
+
+  it('returns 5xx for server error statuses', () => {
+    expect(normalizeKycWebhookStatusClass(500)).toBe('5xx');
+    expect(normalizeKycWebhookStatusClass(503)).toBe('5xx');
+  });
+
+  it('handles non-numeric input gracefully', () => {
+    expect(normalizeKycWebhookStatusClass('400')).toBe('4xx');
+    expect(normalizeKycWebhookStatusClass(undefined)).toBe('2xx');
+    expect(normalizeKycWebhookStatusClass(null)).toBe('2xx');
+  });
+});
+
+describe('normalizeKycWebhookCause (issue #731)', () => {
+  const { normalizeKycWebhookCause } = require('../src/metrics');
+
+  it('returns none for 2xx responses without error code', () => {
+    expect(normalizeKycWebhookCause({ status: 200 })).toBe('none');
+    expect(normalizeKycWebhookCause({ status: 201 })).toBe('none');
+  });
+
+  it('returns the errorCode when it is a valid bounded value', () => {
+    expect(normalizeKycWebhookCause({ status: 400, errorCode: 'missing_sme_id' })).toBe('missing_sme_id');
+    expect(normalizeKycWebhookCause({ status: 401, errorCode: 'invalid_signature' })).toBe('invalid_signature');
+    expect(normalizeKycWebhookCause({ status: 503, errorCode: 'missing_secret' })).toBe('missing_secret');
+  });
+
+  it('returns internal for unknown error codes', () => {
+    expect(normalizeKycWebhookCause({ status: 500, errorCode: 'something_unexpected' })).toBe('internal');
+    expect(normalizeKycWebhookCause({ status: 400, errorCode: '' })).toBe('4xx' ? 'internal' : 'internal');
+  });
+
+  it('returns internal for 4xx without an error code', () => {
+    expect(normalizeKycWebhookCause({ status: 400 })).toBe('internal');
+    expect(normalizeKycWebhookCause({ status: 500 })).toBe('internal');
+  });
+});
