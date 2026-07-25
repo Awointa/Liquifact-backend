@@ -4,7 +4,7 @@
  *
  * Invoices are resolved and persisted through invoiceService (Knex), scoped
  * to the authenticated tenant from extractTenant middleware. Status is never
- * taken from the client — it is always derived from the state machine result
+ * taken from the client â€” it is always derived from the state machine result
  * of a validated transition.
  *
  * The capital-movement link-escrow route is protected by the KYC gate.
@@ -29,6 +29,10 @@ const { extractTenant } = require('../middleware/tenant');
 const responseHelper = require('../utils/responseHelper');
 
 router.use(extractTenant);
+
+// Per-client (API key / IP) rate limit on the invoice-state endpoints (#739).
+const { invoiceStateLimiter } = require('../middleware/rateLimit');
+router.use(invoiceStateLimiter);
 
 /**
  * Resolves the acting principal identifier from the authenticated request.

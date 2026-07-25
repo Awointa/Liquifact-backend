@@ -163,7 +163,7 @@ const SENSITIVE_MAX = parseRateLimitEnv('RATE_LIMIT_SENSITIVE_MAX', 40);
 const API_KEY_WINDOW_MS = parseRateLimitEnv('RATE_LIMIT_API_KEY_WINDOW_MS', 15 * 60 * 1000);
 const API_KEY_MAX = parseRateLimitEnv('RATE_LIMIT_API_KEY_MAX', 1000);
 
-// Issue #754 — config-endpoint rate limiter. Defaults target the admin-only
+// Issue #754 â€” config-endpoint rate limiter. Defaults target the admin-only
 // reality of /api/admin/config: a 60 s window with 20 requests per client is
 // enough for six interactive writes per minute across the entire feature
 // surface while still making accidental bursts (e.g. a buggy redeploy loop)
@@ -265,17 +265,6 @@ function adminConfigKeyGenerator(req) {
 /**
  * 429 response body for {@link adminConfigLimiter}.
  *
- * Emits the canonical RFC 7807 extensions used elsewhere in this codebase
- * (see {@link module:utils/problemDetails} + {@link module:errors/AppError}).
- * Notably the `retry_hint` field is snake-cased for wire compatibility with
- * the rest of the platform's problem+json responses; clients can rely on
- * `retry_hint` being present on any 429 they receive.
- *
- * Note: express-rate-limit already sets a precise `Retry-After` header
- * (seconds remaining until the window resets). We deliberately do NOT
- * override it — the framework value is strictly more accurate than any
- * `windowMs`-derived estimate could ever be.
- *
  * @param {import('express').Request} _req - Express request (unused).
  * @param {import('express').Response} res - Express response.
  * @param {import('express').NextFunction} _next - Express next (unused).
@@ -299,21 +288,6 @@ function adminConfigHandler(_req, res, _next, options) {
 /**
  * Per-client rate limiter for /api/admin/config (issue #754).
  *
- * Each client — identified by X-API-Key when present, otherwise by socket IP —
- * is allotted a small but configurable per-window budget. The window and cap
- * are env-driven so operators can tighten the limit without a code change.
- *
- * Issue-specific options (X-Forwarded-For hardening, structured 429 body,
- * prefixed key format) are passed inline to express-rate-limit so they do not
- * leak into the shared {@link createRateLimiter} helper used by the global,
- * sensitive, and api-key scopes. The Redis store resolution is delegated to
- * {@link resolveRateLimitStore} so multi-instance deployments (#429) still
- * see cluster-correct counting when Redis is available.
- *
- * The limiter is mounted in {@link routes/adminConfig} BEFORE the admin auth
- * stack so that failed authentication attempts still consume quota (defending
- * against auth-flooding with bogus API keys / JWTs).
- *
  * Env vars:
  *   - `CONFIG_RATE_LIMIT_WINDOW_MS` (default 60 000)
  *   - `CONFIG_RATE_LIMIT_MAX`       (default 20)
@@ -327,10 +301,6 @@ const adminConfigLimiter = rateLimit({
   legacyHeaders: false,
   store: resolveRateLimitStore('config'),
   keyGenerator: adminConfigKeyGenerator,
-  // Reject X-Forwarded-For at the express-rate-limit layer so nobody can
-  // spoof a different `req.ip` to dodge the IP-fallback bucket. Operators
-  // behind a real reverse proxy must still opt-in via `app.set('trust
-  // proxy', …)` — see src/metrics.js for the cluster-detection caveats.
   validate: {
     xForwardedForHeader: false,
   },
@@ -339,13 +309,7 @@ const adminConfigLimiter = rateLimit({
 
 /**
  * Factory variant of {@link adminConfigLimiter} for callers (mostly tests)
- * that need to construct a fresh limiter with different bounds. Production
- * code should mount `adminConfigLimiter` directly so the Redis/console.warn
- * handshake runs once at module load, not once per request.
- *
- * Inlines the same option shape as `adminConfigLimiter` instead of reaching
- * into its `.keyGenerator` / `.handler` symbols (which are not part of
- * express-rate-limit's public API).
+ * that need to construct a fresh limiter with different bounds.
  *
  * @returns {import('express').RequestHandler}
  */
@@ -364,93 +328,29 @@ function createConfigRateLimiter() {
   });
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Metrics-endpoint rate limiter (issue #744)
-// ═══════════════════════════════════════════════════════════════════════════
+const INVOICE_STATE_WINDOW_MS = parseRateLimitEnv('RATE_LIMIT_INVOICE_STATE_WINDOW_MS', 15 * 60 * 1000);
+const INVOICE_STATE_MAX = parseRateLimitEnv('RATE_LIMIT_INVOICE_STATE_MAX', 60);
 
 /**
- * 429 response body for {@link metricsLimiter}.
+ * Per-client (API key / IP) rate limiter for the invoice-state endpoints.
+ * Config-driven via RATE_LIMIT_INVOICE_STATE_WINDOW_MS / RATE_LIMIT_INVOICE_STATE_MAX.
+ * express-rate-limit sets Retry-After via standardHeaders on 429.
  *
- * Emits the canonical RFC 7807 extensions consistent with the rest of
- * the platform's problem+json responses. Uses the same wire format as
- * {@link adminConfigHandler} with `scope: 'metrics'`.
- *
- * @param {import('express').Request} _req - Express request (unused).
- * @param {import('express').Response} res - Express response.
- * @param {import('express').NextFunction} _next - Express next (unused).
- * @param {{ statusCode: number, windowMs: number }} options - RateLimit options.
- * @returns {void}
+ * @returns {Function} Express rate limiting middleware.
  */
-function metricsRateLimitHandler(_req, res, _next, options) {
-  res.status(options.statusCode).json({
-    type: 'https://liquifact.com/probs/too-many-requests',
-    title: 'Too Many Requests',
-    status: options.statusCode,
-    code: 'RATE_LIMITED',
-    retryable: true,
-    retry_hint: 'Wait for the rate-limit window to reset before retrying.',
-    scope: 'metrics',
-    error: 'Too many requests.',
-    message: 'Rate limit threshold breached for /metrics. Please try again later.',
-  });
-}
-
-/**
- * Per-client rate limiter for /metrics (issue #744).
- *
- * Each client — identified by X-API-Key when present, otherwise by socket IP —
- * is allotted a configurable per-window budget. The window and cap are
- * env-driven so operators can tune the limit without a code change.
- *
- * Reuses {@link adminConfigKeyGenerator} for the per-client key strategy
- * (API key → IP → 127.0.0.1) so the fallback chain stays consistent across
- * all scoped limiters.
- *
- * The limiter is mounted in `src/app.js` BEFORE `metricsAuth` so that
- * unauthenticated attempts still consume quota — defending against
- * brute-force token guessing on the metrics surface.
- *
- * Env vars:
- *   - `METRICS_RATE_LIMIT_WINDOW_MS` (default 60 000)
- *   - `METRICS_RATE_LIMIT_MAX`       (default 30)
- *
- * @type {import('express').RequestHandler}
- */
-const metricsLimiter = rateLimit({
-  windowMs: METRICS_RATE_LIMIT_WINDOW_MS,
-  limit: METRICS_RATE_LIMIT_MAX,
+const invoiceStateLimiter = rateLimit({
+  windowMs: INVOICE_STATE_WINDOW_MS,
+  limit: INVOICE_STATE_MAX,
+  message: {
+    error: `Too many invoice-state requests. Max ${INVOICE_STATE_MAX} per ${Math.round(INVOICE_STATE_WINDOW_MS / 60000)} minutes.`,
+  },
   standardHeaders: true,
   legacyHeaders: false,
-  store: resolveRateLimitStore('metrics'),
-  keyGenerator: adminConfigKeyGenerator,
+  keyGenerator,
   validate: {
     xForwardedForHeader: false,
   },
-  handler: metricsRateLimitHandler,
 });
-
-/**
- * Factory variant of {@link metricsLimiter} for callers (mostly tests)
- * that need to construct a fresh limiter with different bounds. Production
- * code should mount `metricsLimiter` directly so the Redis/console.warn
- * handshake runs once at module load.
- *
- * @returns {import('express').RequestHandler}
- */
-function createMetricsRateLimiter() {
-  return rateLimit({
-    windowMs: METRICS_RATE_LIMIT_WINDOW_MS,
-    limit: METRICS_RATE_LIMIT_MAX,
-    standardHeaders: true,
-    legacyHeaders: false,
-    store: resolveRateLimitStore('metrics'),
-    keyGenerator: adminConfigKeyGenerator,
-    validate: {
-      xForwardedForHeader: false,
-    },
-    handler: metricsRateLimitHandler,
-  });
-}
 
 module.exports = {
   createRateLimiter,
@@ -461,12 +361,7 @@ module.exports = {
   adminConfigLimiter,
   adminConfigKeyGenerator,
   adminConfigHandler,
-  healthLimiter,
-  createHealthRateLimiter,
-  healthHandler,
-  parseRateLimitEnv,
-  keyGenerator,
-  apiKeyKeyGenerator,
+  invoiceStateLimiter,
   getApiKey,
   CONFIG_RATE_LIMIT_WINDOW_MS,
   CONFIG_RATE_LIMIT_MAX,
