@@ -28,6 +28,7 @@ jest.mock('../src/db/knex');
 
 const db = require('../src/db/knex');
 const request = require('supertest');
+const jwt = require('jsonwebtoken');
 const {
   KYC_STATUSES,
   getKycStatus,
@@ -932,6 +933,7 @@ describe('KYC webhook route', () => {
   let app;
 
   beforeEach(() => {
+    process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long-string-for-jest';
     app = require('express')();
     app.use(require('express').raw({ type: 'application/json', limit: '100kb' }));
     app.use('/api/kyc', kycRoutes);
@@ -945,7 +947,97 @@ describe('KYC webhook route', () => {
       status: 'approved',
       recordId: 'rec_webhook_01',
       verifiedAt: '2026-06-24T12:00:00.000Z',
+      tenantId: 'tenant-a',
     };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+    const token = jwt.sign({ sub: 'svc-internal', tenantId: 'tenant-a' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    db.mockImplementation(() => ({
+      where: jest.fn().mockReturnThis(),
+      first: jest.fn().mockResolvedValue(null),
+      insert: jest.fn().mockResolvedValue([1]),
+      update: jest.fn().mockResolvedValue(1),
+    }));
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-tenant-id', 'tenant-a')
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.status).toBe('verified');
+  });
+
+  it('rejects webhook with invalid signature', async () => {
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const payload = { smeId: 'sme-webhook-02', status: 'approved', tenantId: 'tenant-a' };
+    const rawBody = JSON.stringify(payload);
+    const token = jwt.sign({ sub: 'svc-internal', tenantId: 'tenant-a' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-tenant-id', 'tenant-a')
+      .set('X-Signature', 't=123,v1=deadbeef')
+      .send(rawBody);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/Invalid webhook signature/);
+  });
+
+  it('rejects authenticated requests that lack tenant context', async () => {
+    process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long-string-for-jest';
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const token = jwt.sign({ sub: 'svc-internal' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const payload = { smeId: 'sme-webhook-05', status: 'approved', tenantId: 'tenant-a' };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Missing tenant context.');
+  });
+
+  it('rejects cross-tenant webhook updates', async () => {
+    process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long-string-for-jest';
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const token = jwt.sign({ sub: 'svc-internal', tenantId: 'tenant-a' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const payload = { smeId: 'sme-webhook-06', status: 'approved', tenantId: 'tenant-b' };
+    const rawBody = JSON.stringify(payload);
+    const signature = createSignatureHeader('webhook-secret', rawBody);
+
+    const res = await request(app)
+      .post('/api/kyc/webhook')
+      .set('Content-Type', 'application/json')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-Signature', signature)
+      .send(rawBody);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('Tenant scope mismatch.');
+  });
+
+  it('accepts matching tenant-scoped webhook updates', async () => {
+    process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long-string-for-jest';
+    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
+
+    const token = jwt.sign({ sub: 'svc-internal', tenantId: 'tenant-a' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const payload = { smeId: 'sme-webhook-07', status: 'approved', tenantId: 'tenant-a' };
     const rawBody = JSON.stringify(payload);
     const signature = createSignatureHeader('webhook-secret', rawBody);
 
@@ -959,40 +1051,29 @@ describe('KYC webhook route', () => {
     const res = await request(app)
       .post('/api/kyc/webhook')
       .set('Content-Type', 'application/json')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-tenant-id', 'tenant-a')
       .set('X-Signature', signature)
       .send(rawBody);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.status).toBe('verified');
-  });
-
-  it('rejects webhook with invalid signature', async () => {
-    process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
-
-    const payload = { smeId: 'sme-webhook-02', status: 'approved' };
-    const rawBody = JSON.stringify(payload);
-
-    const res = await request(app)
-      .post('/api/kyc/webhook')
-      .set('Content-Type', 'application/json')
-      .set('X-Signature', 't=123,v1=deadbeef')
-      .send(rawBody);
-
-    expect(res.status).toBe(401);
-    expect(res.body.error).toMatch(/Invalid webhook signature/);
+    expect(res.body.smeId).toBe('sme-webhook-07');
   });
 
   it('rejects webhook with unknown provider status', async () => {
     process.env.KYC_PROVIDER_SECRET = 'webhook-secret';
 
-    const payload = { smeId: 'sme-webhook-03', status: 'mystery_status' };
+    const payload = { smeId: 'sme-webhook-03', status: 'mystery_status', tenantId: 'tenant-a' };
     const rawBody = JSON.stringify(payload);
     const signature = createSignatureHeader('webhook-secret', rawBody);
+    const token = jwt.sign({ sub: 'svc-internal', tenantId: 'tenant-a' }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
     const res = await request(app)
       .post('/api/kyc/webhook')
       .set('Content-Type', 'application/json')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-tenant-id', 'tenant-a')
       .set('X-Signature', signature)
       .send(rawBody);
 
@@ -1008,9 +1089,11 @@ describe('KYC webhook route', () => {
       status: 'approved',
       recordId: 'rec_webhook_04',
       verifiedAt: '2026-06-24T12:00:00.000Z',
+      tenantId: 'tenant-a',
     };
     const rawBody = JSON.stringify(payload);
     const signature = createSignatureHeader('webhook-secret', rawBody);
+    const token = jwt.sign({ sub: 'svc-internal', tenantId: 'tenant-a' }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
     const where = jest.fn().mockReturnThis();
     const first = jest.fn().mockResolvedValue({ sme_id: 'sme-webhook-04' });
@@ -1022,12 +1105,16 @@ describe('KYC webhook route', () => {
     const firstResponse = await request(app)
       .post('/api/kyc/webhook')
       .set('Content-Type', 'application/json')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-tenant-id', 'tenant-a')
       .set('X-Signature', signature)
       .send(rawBody);
 
     const secondResponse = await request(app)
       .post('/api/kyc/webhook')
       .set('Content-Type', 'application/json')
+      .set('Authorization', `Bearer ${token}`)
+      .set('x-tenant-id', 'tenant-a')
       .set('X-Signature', signature)
       .send(rawBody);
 

@@ -4,9 +4,8 @@ const express = require('express');
 const { verifySignature } = require('../services/webhooks');
 const kycService = require('../services/kycService');
 const logger = require('../logger');
-const db = require('../db/knex');
-const { encodeCursor, decodeCursor, CursorError } = require('../utils/cursorPagination');
-const responseHelper = require('../utils/responseHelper');
+const { authenticateToken } = require('../middleware/auth');
+const { extractTenant } = require('../middleware/tenant');
 
 const router = express.Router();
 
@@ -29,7 +28,7 @@ function parseJsonPayload(rawBody) {
  * POST /api/kyc/webhook
  * (existing ingestion endpoint – unchanged)
  */
-router.post('/webhook', async (req, res) => {
+router.post('/webhook', authenticateToken, extractTenant, async (req, res) => {
   const config = kycService.getKycProviderConfig();
   const secret = config.apiSecret;
   const signatureHeader = req.header('X-Signature');
@@ -57,21 +56,23 @@ router.post('/webhook', async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
-  // ── Strict payload validation (issue #638) ──────────────────────────────
-  // Validate the parsed webhook body against the bounded Zod schema.
-  // Rejects unknown fields, wrong types, oversized strings, and
-  // out-of-range values with a structured application/problem+json 400.
-  const validationResult = kycWebhookSchema.safeParse(payload);
-  if (!validationResult.success) {
-    const fieldErrors = parseValidationErrors(validationResult.error);
-    return res.status(400).json({
-      type: 'https://liquifact.io/problems/validation-error',
-      title: 'Validation Error',
-      status: 400,
-      detail: 'KYC webhook payload contains invalid or missing fields.',
-      instance: req.originalUrl,
-      fieldErrors,
-    });
+  const smeId = payload.smeId || payload.sme_id;
+  const status = payload.status || payload.kycStatus || payload.kyc_status;
+  const providerRecordId = payload.recordId || payload.providerRecordId || payload.provider_record_id || null;
+  const verifiedAt = payload.verifiedAt || payload.verified_at || null;
+  const payloadTenantId = payload.tenantId || payload.tenant_id || null;
+  const requestTenantId = req.tenantId;
+
+  if (payloadTenantId && requestTenantId && payloadTenantId !== requestTenantId) {
+    return res.status(403).json({ error: 'Tenant scope mismatch.' });
+  }
+
+  if (payloadTenantId && !requestTenantId) {
+    return res.status(400).json({ error: 'Missing tenant context.' });
+  }
+
+  if (!smeId || typeof smeId !== 'string') {
+    return res.status(400).json({ error: 'Missing or invalid smeId' });
   }
 
   const validated = validationResult.data;
