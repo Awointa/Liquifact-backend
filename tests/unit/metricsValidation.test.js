@@ -102,6 +102,20 @@ describe('validateMetricsRequest — success cases', () => {
     expect(result.userId).toBe('');
   });
 
+  it('returns null and sends 403 when req.tenantId differs from req.user.tenantId (cross-tenant spoofing)', () => {
+    const req = makeReq({ user: { id: 'u1', tenantId: 'tenant-a' }, tenantId: 'tenant-b' });
+    const res = makeRes();
+
+    const result = validateMetricsRequest(req, res);
+
+    expect(result).toBeNull();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'Forbidden',
+      message: 'Cross-tenant access denied',
+    });
+  });
+
   it('does NOT call res.status or res.json on the success path', () => {
     const req = makeReq();
     const res = makeRes();

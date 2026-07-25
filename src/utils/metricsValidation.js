@@ -69,6 +69,16 @@ function validateMetricsRequest(req, res) {
     return null;
   }
 
+  // Cross-tenant read protection: if the request is authenticated via JWT (has req.user.tenantId),
+  // ensure the resolved tenantId (which might come from the x-tenant-id header) matches the JWT scope.
+  if (req.user && req.user.tenantId && tenantId !== req.user.tenantId) {
+    res.status(403).json({
+      error: 'Forbidden',
+      message: 'Cross-tenant access denied',
+    });
+    return null;
+  }
+
   return { userId, tenantId };
 }
 
