@@ -31,6 +31,7 @@ const { encodeCursor, decodeCursor, CursorError } = require('../utils/cursorPagi
 const logger = require('../logger');
 const AppError = require('../errors/AppError');
 const { LOCKED_STATUSES } = require('../middleware/patchInvoice');
+const { executeTransition } = require('./invoiceStateMachine');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -93,30 +94,6 @@ function nowValue() {
   return db && db.fn && typeof db.fn.now === 'function'
     ? db.fn.now()
     : new Date().toISOString();
-}
-
-/**
- * Stub state-machine transition executor.
- *
- * TODO: Replace with the full invoice state-machine implementation.
- * Currently validates that the transition is structurally well-formed and
- * returns a simple result object.  All real validation and audit-log
- * persistence must be wired in here when the state machine is ready.
- *
- * @param {object} ctx - Transition context.
- * @param {string} ctx.invoiceId
- * @param {string} ctx.currentState
- * @param {string} ctx.targetState
- * @param {string} ctx.actor
- * @param {string} [ctx.reason]
- * @param {string} [ctx.ipAddress]
- * @param {string} [ctx.userAgent]
- * @param {object} [ctx.metadata]
- * @returns {Promise<{previousState: string, newState: string}>}
- */
-async function executeTransition(ctx) {
-  const { executeTransition: machineTransition } = require('./invoiceStateMachine');
-  return machineTransition(ctx);
 }
 
 // ---------------------------------------------------------------------------
