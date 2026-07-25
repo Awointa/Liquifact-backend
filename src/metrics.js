@@ -1107,6 +1107,149 @@ const persistenceRequestErrorsTotal = new client.Counter({
   registers: [registry],
 });
 
+// ── Health endpoint metrics ────────────────────────────────────────────────
+
+/**
+ * Bounded enum of allowed `endpoint` label values for health metrics.
+ * @readonly
+ */
+const HEALTH_ENDPOINT_ENUM = Object.freeze([
+  'health_liveness',
+  'health_full',
+  'health_readiness',
+  'health_checks_list',
+  'health_reports_submit',
+  'unknown',
+]);
+
+/**
+ * Bounded enum of allowed `status_class` label values for health metrics.
+ * @readonly
+ */
+const HEALTH_STATUS_CLASS_ENUM = Object.freeze(['2xx', '4xx', '5xx']);
+
+/**
+ * Bounded enum of allowed `cause` label values for health metrics.
+ * Raw error messages are NEVER used as labels.
+ * @readonly
+ */
+const HEALTH_CAUSE_ENUM = Object.freeze([
+  'validation',
+  'timeout',
+  'dependency_failure',
+  'internal',
+  'none',
+]);
+
+/**
+ * Maps a raw health endpoint hint to a bounded metric label value.
+ *
+ * @param {unknown} raw - Raw endpoint identifier.
+ * @returns {string} Bounded value from {@link HEALTH_ENDPOINT_ENUM}.
+ */
+function normalizeHealthEndpoint(raw) {
+  const str = typeof raw === 'string' ? raw.trim() : '';
+  return HEALTH_ENDPOINT_ENUM.includes(str) ? str : 'unknown';
+}
+
+/**
+ * Maps an HTTP status code to a bounded `status_class` label value.
+ *
+ * @param {unknown} status - HTTP status code.
+ * @returns {string} Bounded value from {@link HEALTH_STATUS_CLASS_ENUM}.
+ */
+function normalizeHealthStatusClass(status) {
+  const code = Number(status);
+  if (code >= 500) { return '5xx'; }
+  if (code >= 400) { return '4xx'; }
+  return '2xx';
+}
+
+/**
+ * Maps a raw health endpoint failure to a bounded `cause` label value.
+ *
+ * A 2xx outcome maps to `none`. 4xx responses map to `validation`.
+ * 5xx errors with timeout-like characteristics map to `timeout`;
+ * errors indicating dependency failure (database, Soroban RPC, storage, etc.)
+ * map to `dependency_failure`; everything else maps to `internal`.
+ *
+ * @param {unknown} err - Raw error object or code (null/undefined for success).
+ * @param {number} [status] - HTTP status code, used to disambiguate.
+ * @returns {string} Bounded value from {@link HEALTH_CAUSE_ENUM}.
+ */
+function normalizeHealthCause(err, status) {
+  const code = Number(status);
+  if (!err && code < 400) { return 'none'; }
+
+  if (code >= 400 && code < 500) { return 'validation'; }
+
+  if (err) {
+    const errCode = typeof err === 'object' && 'code' in err ? String(err.code) : '';
+    const errMessage = typeof err === 'object' && 'message' in err ? String(err.message).toLowerCase() : '';
+
+    // Timeout-like errors
+    if (
+      errCode === 'ETIMEDOUT' ||
+      errCode === 'ECONNABORTED' ||
+      errCode === 'ABORT_ERR' ||
+      errMessage.includes('timeout') ||
+      errMessage.includes('timed out') ||
+      errMessage.includes('abort')
+    ) {
+      return 'timeout';
+    }
+
+    // Dependency failure indicators
+    if (
+      errCode === 'ECONNREFUSED' ||
+      errCode === 'ENOTFOUND' ||
+      errCode === 'POOL_ACQUIRE_TIMEOUT' ||
+      errMessage.includes('database') ||
+      errMessage.includes('unreachable') ||
+      errMessage.includes('soroban') ||
+      errMessage.includes('storage') ||
+      errMessage.includes('reconciliation')
+    ) {
+      return 'dependency_failure';
+    }
+  }
+
+  return 'internal';
+}
+
+/**
+ * Histogram: Wall-clock duration of health endpoint requests in seconds.
+ * @type {import('prom-client').Histogram}
+ */
+const healthRequestDurationSeconds = new client.Histogram({
+  name: 'health_request_duration_seconds',
+  help: 'Duration of health endpoint requests in seconds',
+  labelNames: ['endpoint', 'status_class'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [registry],
+});
+
+/**
+ * Counter: Total health endpoint requests.
+ * @type {import('prom-client').Counter}
+ */
+const healthRequestsTotal = new client.Counter({
+  name: 'health_requests_total',
+  help: 'Total number of health endpoint requests',
+  labelNames: ['endpoint', 'status_class'],
+  registers: [registry],
+});
+
+/**
+ * Counter: Health endpoint request errors by cause.
+ * @type {import('prom-client').Counter}
+ */
+const healthRequestErrorsTotal = new client.Counter({
+  name: 'health_request_errors_total',
+  help: 'Total number of health endpoint request errors by cause',
+  labelNames: ['endpoint', 'cause'],
+  registers: [registry],
+});
 
 /**
  * Returns the shared Prometheus registry.
@@ -1156,6 +1299,15 @@ module.exports = {
   normalizeSorobanRpcOutcome,
   normalizeSorobanRetryCause,
   normalizeReminderReason,
+  healthRequestDurationSeconds,
+  healthRequestsTotal,
+  healthRequestErrorsTotal,
+  normalizeHealthEndpoint,
+  normalizeHealthStatusClass,
+  normalizeHealthCause,
+  HEALTH_ENDPOINT_ENUM,
+  HEALTH_STATUS_CLASS_ENUM,
+  HEALTH_CAUSE_ENUM,
   startMetricsRefresh,
   stopMetricsRefresh,
 };

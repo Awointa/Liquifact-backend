@@ -37,6 +37,7 @@ const {
 const idempotencyMiddleware = require('../middleware/idempotency');
 const { healthReportSchema, parseValidationErrors } = require('../schemas/healthReport');
 const logger = require('../logger');
+const { instrumentHealth } = require('../middleware/healthMetrics');
 
 /**
  * @swagger
@@ -86,7 +87,7 @@ const logger = require('../logger');
  *         description: Malformed or tampered cursor.
  *         $ref: '#/components/responses/Problem400'
  */
-router.get('/checks', async (req, res, next) => {
+router.get('/checks', instrumentHealth('health_checks_list', async (req, res, next) => {
   try {
     const limit = resolveLimit(req.query.limit);
     const rawCursor = req.query.cursor;
@@ -163,7 +164,7 @@ router.get('/checks', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+}));
 
 // ── Health report write endpoint ─────────────────────────────────────────────
 
@@ -237,7 +238,7 @@ router.get('/checks', async (req, res, next) => {
 router.post(
   '/reports',
   idempotencyMiddleware,
-  (req, res) => {
+  instrumentHealth('health_reports_submit', (req, res) => {
     const requestLogger = logger.createRequestLogger(req);
 
     // Validate the request body with Zod
@@ -279,7 +280,7 @@ router.post(
       },
       message: `Health report for '${serviceName}' accepted.`,
     });
-  }
+  })
 );
 
 module.exports = router;
